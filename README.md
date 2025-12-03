@@ -17,3 +17,10 @@ To prevent people from not revealing we require some security deposit to be plac
 When you commit you get security deposit held by SC, after revealing in time you get your money back, otherwise they are kept by SC forever.
 You decide the amount yourself.
 Higher amount = higher reward.
+
+
+----
+
+Only implements lost deposit fees to Random SC shareholders.
+
+Does not include entropy bits selling revenue to entropy miners/shareholders (needs explanation).
