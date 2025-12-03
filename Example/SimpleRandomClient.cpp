@@ -1,8 +1,10 @@
-﻿#include <immintrin.h>
+#include <immintrin.h>
 #include <openssl/sha.h>
 #include <iostream>
 #include <cstring>
 #include <queue>
+#include <thread>
+#include <chrono>
 
 class SimpleRandomClient {
 private:
@@ -85,35 +87,81 @@ public:
         return miningResult;
     }
     
-    // Temporary mining: mine just to get randomness, then stop
+    // Proper 3-tick temporary mining
     MiningResult getRandomnessTemporarily(uint64 depositAmount) {
-        std::cout << "\n=== Temporary Mining for Randomness ===" << std::endl;
+        std::cout << "\n=== Temporary Mining for Randomness (3-Tick Flow) ===" << std::endl;
         
-        // Start mining
+        uint32 startTick = getCurrentTick() + 1;
+        
+        // Step 1: Generate entropy and commit
         bit_4096 entropy = generateEntropy();
         id digest = hashEntropy(entropy);
         bit_4096 zeroReveal = {};
         
+        waitUntilTick(startTick);
         auto result1 = revealAndCommit(zeroReveal, digest, depositAmount);
         if (!result1.success) {
             return result1;
         }
         
-        std::cout << "Got random bytes from start: ";
+        std::cout << "Tick " << startTick << ": Initial commit, random bytes: ";
         printRandomBytes(result1.randomBytes, 8);
         
-        // Wait 3 ticks and stop
-        waitForTicks(3);
+        // Step 2: Wait 3 ticks and reveal
+        waitUntilTick(startTick + 3);
         id zeroCommit = {};
         auto result2 = revealAndCommit(entropy, zeroCommit, 0);
         
         if (result2.success) {
-            std::cout << "Got random bytes from stop: ";
+            std::cout << "Tick " << (startTick + 3) << ": Final reveal, random bytes: ";
             printRandomBytes(result2.randomBytes, 8);
             std::cout << "Deposit returned: " << result2.depositReturned << " QU" << std::endl;
         }
         
         return result2;
+    }
+    
+    // Helper: Start mining with proper flow
+    MiningResult startMining(uint64 depositAmount) {
+        bit_4096 entropy = generateEntropy();
+        pendingReveals.push(entropy);
+        
+        id digest = hashEntropy(entropy);
+        bit_4096 zeroReveal = {};
+        
+        return revealAndCommit(zeroReveal, digest, depositAmount);
+    }
+    
+    // Helper: Continue mining with proper flow
+    MiningResult continueMining(uint64 depositAmount) {
+        if (pendingReveals.empty()) {
+            throw std::runtime_error("No pending reveals - call startMining first");
+        }
+        
+        // Get previous entropy to reveal
+        bit_4096 previousEntropy = pendingReveals.front();
+        pendingReveals.pop();
+        
+        // Generate new entropy for next cycle
+        bit_4096 newEntropy = generateEntropy();
+        pendingReveals.push(newEntropy);
+        
+        id newDigest = hashEntropy(newEntropy);
+        
+        return revealAndCommit(previousEntropy, newDigest, depositAmount);
+    }
+    
+    // Helper: Stop mining
+    MiningResult stopMining() {
+        if (pendingReveals.empty()) {
+            throw std::runtime_error("No pending reveals to stop");
+        }
+        
+        bit_4096 finalEntropy = pendingReveals.front();
+        pendingReveals.pop();
+        
+        id zeroCommit = {};
+        return revealAndCommit(finalEntropy, zeroCommit, 0);
     }
     
     // Get contract information (no randomness)
@@ -124,6 +172,9 @@ public:
         uint32 activeCommitments;
         uint64 totalRevenue;
         uint64 lostDepositsRevenue;
+        uint64 totalSecurityDepositsLocked;
+        uint32 revealTimeoutTicks;
+        uint64 minimumSecurityDeposit;
     };
     
     ContractInfo getContractInfo() {
@@ -142,9 +193,22 @@ public:
             info.activeCommitments = output.activeCommitments;
             info.totalRevenue = output.totalRevenue;
             info.lostDepositsRevenue = output.lostDepositsRevenue;
+            info.totalSecurityDepositsLocked = output.totalSecurityDepositsLocked;
+            info.revealTimeoutTicks = output.revealTimeoutTicks;
+            info.minimumSecurityDeposit = output.minimumSecurityDeposit;
         }
         
         return info;
+    }
+
+    // Helper function for proper tick timing
+    void waitUntilTick(uint32 targetTick) {
+        uint32 currentTick = getCurrentTick();
+        while (currentTick < targetTick) {
+            std::cout << "Waiting for tick " << targetTick << " (current: " << currentTick << ")" << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            currentTick = getCurrentTick();
+        }
     }
 
 private:
@@ -155,39 +219,52 @@ private:
         std::cout << "..." << std::endl;
     }
     
-    // Helper functions (placeholder implementations)
-    // ... (same as before)
-};
-
-int main() {
-    SimpleRandomClient client;
-    
-    std::cout << "=== Secure Random Mining (No BuyEntropy) ===" << std::endl;
-    
-    try {
-        // Example 1: Temporary mining
-        auto result = client.getRandomnessTemporarily(10000);
-        
-        if (result.success) {
-            // Use random bytes for applications
-            uint32 diceRoll = (result.randomBytes[0] % 6) + 1;
-            uint32 lottery = result.randomBytes[1] % 101;
-            
-            std::cout << "Dice: " << diceRoll << std::endl;
-            std::cout << "Lottery: " << lottery << std::endl;
-        }
-        
-        // Example 2: Check contract stats
-        auto info = client.getContractInfo();
-        std::cout << "\nContract Stats:" << std::endl;
-        std::cout << "Total commits: " << info.totalCommits << std::endl;
-        std::cout << "Total reveals: " << info.totalReveals << std::endl;
-        std::cout << "Lost deposits revenue: " << info.lostDepositsRevenue << " QU" << std::endl;
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return 1;
+    // Helper function implementations (replace with actual Qubic client code)
+    PublicKey getMyPublicKey() {
+        PublicKey pk = {};
+        return pk;
     }
     
-    return 0;
-}
+    PublicKey parsePublicKey(const char* contractId) {
+        PublicKey pk = {};
+        return pk;
+    }
+    
+    uint32 getCurrentTick() {
+        return 1000; // Placeholder - replace with actual implementation
+    }
+    
+    void waitForTicks(uint32 ticks) {
+        std::cout << "Waiting " << ticks << " ticks..." << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(ticks * 100));
+    }
+    
+    void signTransaction(Transaction& tx) {
+        // Sign transaction with your private key
+    }
+    
+    struct TransactionResult {
+        bool success;
+        std::string transactionId;
+        uint8* outputData;
+    };
+    
+    TransactionResult broadcastTransaction(const Transaction& tx) {
+        TransactionResult result;
+        result.success = true; // Placeholder
+        result.transactionId = "tx_123456";
+        return result;
+    }
+    
+    struct QueryResponse {
+        bool success;
+        uint8* data;
+    };
+    
+    QueryResponse makeContractQuery(const char* contractId, uint32 functionIndex, 
+                                  void* input, uint32 inputSize) {
+        QueryResponse response;
+        response.success = true; // Placeholder
+        return response;
+    }
+};
