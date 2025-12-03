@@ -19,6 +19,13 @@ struct RANDOM_CONTRACT_STATE
     uint64 minimumSecurityDeposit;
     uint32 revealTimeoutTicks; // 3 ticks for reveal
     
+    // Revenue distribution system
+    uint64 totalRevenue;                    // All revenue generated
+    uint64 pendingShareholderDistribution; // 100% to Qubic shareholders (from lost deposits)
+    
+    // Revenue sources
+    uint64 lostDepositsRevenue;  // From timeout failures - goes to shareholders
+    
     // Valid deposit amounts (powers of 10)
     uint64 validDepositAmounts[16];
     
@@ -38,7 +45,7 @@ struct RANDOM_CONTRACT_STATE
 struct RANDOM : public ContractBase
 {
 public:
-    // MAIN PROCEDURE - Does everything: commit, reveal, returns random bytes
+    // THE ONLY PROCEDURE - Mining gives you random bytes
     struct RevealAndCommit_input
     {
         bit_4096 revealedBits;  // Previous entropy to reveal (or zeros for first commit)
@@ -47,15 +54,14 @@ public:
     
     struct RevealAndCommit_output
     {
-        uint8 randomBytes[32];      // Fresh random bytes generated from entropy pool
+        uint8 randomBytes[32];      // ONLY way to get truly random data
         uint64 entropyVersion;      // Version of entropy pool used
         bool revealSuccessful;      // Whether a reveal was processed
         bool commitSuccessful;      // Whether a new commit was accepted
         uint64 depositReturned;     // Amount of deposit returned (if any)
-        uint64 rewardEarned;        // Reward earned from reveal (if any)
     };
 
-    // READ-ONLY FUNCTIONS - For information only
+    // READ-ONLY FUNCTIONS - Information only, NO random data
     struct GetContractInfo_input
     {
     };
@@ -69,7 +75,12 @@ public:
         uint32 activeCommitments;
         uint64 validDepositAmounts[16];
         uint32 currentTick;
-        uint64 entropyPoolVersion;
+        uint64 entropyPoolVersion;  // Version info only, no random data
+        
+        // Revenue information
+        uint64 totalRevenue;
+        uint64 pendingShareholderDistribution;
+        uint64 lostDepositsRevenue;
     };
 
     struct GetUserCommitments_input
@@ -89,7 +100,7 @@ public:
     };
 
 private:
-    // THE ONLY PROCEDURE - RevealAndCommit does all the work
+    // THE ONLY WAY TO GET RANDOMNESS - Must mine entropy
     PUBLIC_PROCEDURE(RevealAndCommit)
     {
         const auto& input = qpi.input<RevealAndCommit_input>();
@@ -97,7 +108,6 @@ private:
         auto invocatorAmount = qpi.invocationReward();
         auto currentTick = qpi.tick();
         
-        // Initialize output
         qpi.setMem(&output, 0, sizeof(output));
         
         bool hasRevealData = !isZeroBits(input.revealedBits);
@@ -107,47 +117,39 @@ private:
         // Step 1: Process reveal if provided
         if (hasRevealData)
         {
-            // Find the commitment that matches the revealed bits
             for (uint32 i = 0; i < state.commitmentCount; i++)
             {
                 if (!state.commitments[i].hasRevealed && 
                     isEqualId(state.commitments[i].invocatorId, invocatorId))
                 {
-                    // Verify the revealed bits match the committed digest
                     id computedHash = computeHash(input.revealedBits);
                     if (isEqualId(computedHash, state.commitments[i].digest))
                     {
-                        // Check if reveal is within 3-tick timeout
                         if (currentTick > state.commitments[i].revealDeadlineTick)
                         {
-                            // Timeout exceeded - security deposit is forfeited
-                            state.contractFeeReserve += state.commitments[i].amount;
+                            // TIMEOUT - Deposit goes to shareholders
+                            uint64 lostDeposit = state.commitments[i].amount;
+                            state.lostDepositsRevenue += lostDeposit;
+                            state.totalRevenue += lostDeposit;
+                            state.pendingShareholderDistribution += lostDeposit;
+                            
                             output.revealSuccessful = false;
                         }
                         else
                         {
-                            // Valid reveal - add entropy to pool
+                            // SUCCESSFUL REVEAL - Add entropy to pool
                             updateEntropyPool(input.revealedBits);
-
-                            // Calculate reward (5% of deposit)
-                            uint64 reward = (state.commitments[i].amount * 5) / 100;
-                            uint64 totalReturn = state.commitments[i].amount + reward;
                             
-                            // Return security deposit + reward to miner
-                            if (totalReturn > 0)
-                            {
-                                qpi.transfer(invocatorId, totalReturn);
-                            }
+                            // Return full deposit to successful miner
+                            qpi.transfer(invocatorId, state.commitments[i].amount);
                             
                             output.revealSuccessful = true;
                             output.depositReturned = state.commitments[i].amount;
-                            output.rewardEarned = reward;
                             
                             state.totalReveals++;
                             state.totalSecurityDepositsLocked -= state.commitments[i].amount;
                         }
 
-                        // Mark as revealed
                         state.commitments[i].hasRevealed = true;
                         break;
                     }
@@ -155,13 +157,11 @@ private:
             }
         }
 
-        // Step 2: Process new commitment if provided and not stopping
+        // Step 2: Process new commitment
         if (hasNewCommit && !isStoppingMining)
         {
-            // Check if deposit amount is valid (must be power of 10)
             if (isValidDepositAmount(invocatorAmount) && invocatorAmount >= state.minimumSecurityDeposit)
             {
-                // Add new commitment
                 if (state.commitmentCount < 1024)
                 {
                     state.commitments[state.commitmentCount].digest = input.committedDigest;
@@ -180,12 +180,13 @@ private:
             }
         }
 
-        // Step 3: ALWAYS generate and return fresh random bytes
+        // Step 3: ALWAYS return random bytes as reward for mining participation
+        // This is the ONLY way to get truly random data from this contract
         generateRandomBytes(output.randomBytes, 32);
         output.entropyVersion = state.entropyPoolVersion;
     }
 
-    // READ-ONLY: Get contract statistics
+    // READ-ONLY: Get contract statistics (no random data)
     PUBLIC_FUNCTION(GetContractInfo)
     {
         auto currentTick = qpi.tick();
@@ -196,7 +197,12 @@ private:
         output.minimumSecurityDeposit = state.minimumSecurityDeposit;
         output.revealTimeoutTicks = state.revealTimeoutTicks;
         output.currentTick = currentTick;
-        output.entropyPoolVersion = state.entropyPoolVersion;
+        output.entropyPoolVersion = state.entropyPoolVersion; // Version only, no random data
+        
+        // Revenue information
+        output.totalRevenue = state.totalRevenue;
+        output.pendingShareholderDistribution = state.pendingShareholderDistribution;
+        output.lostDepositsRevenue = state.lostDepositsRevenue;
         
         for (int i = 0; i < 16; i++)
         {
@@ -214,7 +220,7 @@ private:
         output.activeCommitments = activeCount;
     }
 
-    // READ-ONLY: Get user's commitment history
+    // READ-ONLY: Get user's commitment history (no random data)
     PUBLIC_FUNCTION(GetUserCommitments)
     {
         const auto& input = qpi.input<GetUserCommitments_input>();
@@ -240,22 +246,27 @@ private:
 
     void BeginEpoch()
     {
-        // Called at the beginning of each epoch
+        // Process any timeouts that might have occurred
+        processTimeouts();
     }
 
     void EndEpoch()
     {
-        // Called at the end of each epoch
-        // Could distribute accumulated fees to shareholders if needed
+        // DISTRIBUTE LOST DEPOSITS TO QUBIC SHAREHOLDERS
+        if (state.pendingShareholderDistribution > 0)
+        {
+            qpi.transferShareToShareOwners(state.pendingShareholderDistribution);
+            state.pendingShareholderDistribution = 0;
+        }
     }
 
     REGISTER_USER_FUNCTIONS_AND_PROCEDURES()
     {
-        // Read-only functions
+        // Read-only functions (no random data)
         REGISTER_USER_FUNCTION(GetContractInfo, 1);
         REGISTER_USER_FUNCTION(GetUserCommitments, 2);
         
-        // The only procedure
+        // The ONLY procedure - must mine to get randomness
         REGISTER_USER_PROCEDURE(RevealAndCommit, 1);
     }
 
@@ -271,7 +282,12 @@ private:
         state.revealTimeoutTicks = 3; // 3 ticks timeout
         state.commitmentCount = 0;
         
-        // Initialize valid deposit amounts (powers of 10: 1, 10, 100, 1K, 10K, etc.)
+        // Initialize revenue tracking (only lost deposits)
+        state.totalRevenue = 0;
+        state.pendingShareholderDistribution = 0;
+        state.lostDepositsRevenue = 0;
+        
+        // Initialize valid deposit amounts (powers of 10)
         for (int i = 0; i < 16; i++)
         {
             state.validDepositAmounts[i] = 1ULL;
@@ -285,9 +301,32 @@ private:
     }
 
 private:
+    void processTimeouts()
+    {
+        // Check for failed reveals and process lost deposits
+        uint32 currentTick = qpi.tick();
+        
+        for (uint32 i = 0; i < state.commitmentCount; i++)
+        {
+            if (!state.commitments[i].hasRevealed && 
+                currentTick > state.commitments[i].revealDeadlineTick)
+            {
+                // This commit has timed out - deposit goes to shareholders
+                uint64 lostDeposit = state.commitments[i].amount;
+                state.lostDepositsRevenue += lostDeposit;
+                state.totalRevenue += lostDeposit;
+                state.pendingShareholderDistribution += lostDeposit;
+                
+                // Mark as processed
+                state.commitments[i].hasRevealed = true;
+                state.totalSecurityDepositsLocked -= lostDeposit;
+            }
+        }
+    }
+
     void generateRandomBytes(uint8* output, uint32 numBytes)
     {
-        // Combine current entropy pool with current tick
+        // Combine current entropy pool with current tick for uniqueness
         m256i combinedEntropy = state.currentEntropyPool;
         m256i tickEntropy = { qpi.tick(), qpi.tick() >> 32, 0, 0 };
         combinedEntropy = xorM256i(combinedEntropy, tickEntropy);
@@ -327,6 +366,7 @@ private:
 
     void updateEntropyPool(const bit_4096& newEntropy)
     {
+        // XOR new entropy into the global pool
         for (int i = 0; i < 4; i++)
         {
             state.currentEntropyPool.m256i_u64[i] ^= newEntropy.data[i];
