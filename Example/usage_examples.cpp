@@ -1,49 +1,49 @@
-﻿int main() {
+#include "RandomContractClient.cpp"
+#include <iostream>
+
+int main() {
     RandomContractClient client;
     
     try {
-        std::cout << "=== Random Contract Usage Examples ===" << std::endl;
+        std::cout << "=== New 3-Tick Cycle Random Mining Examples ===" << std::endl;
         
-        // Example 1: Initial commitment
-        std::cout << "\n1. Making initial commitment..." << std::endl;
-        uint64 securityDeposit = 1000000; // 1 QU
+        uint64 securityDeposit = 10000; // 10K QU (valid power of 10)
+        uint32 targetCycle = getCurrentTick() % 3; // Choose current cycle
         
-        auto result = client.makeInitialCommit(securityDeposit);
+        // Example 1: Start mining on current cycle
+        std::cout << "\n1. Starting mining on cycle " << targetCycle << "..." << std::endl;
+        auto result = client.startMining(securityDeposit, targetCycle);
         if (result.success) {
-            std::cout << "✓ Initial commit successful: " << result.transactionId << std::endl;
+            std::cout << "✓ Mining started: " << result.transactionId << std::endl;
         } else {
-            std::cout << "✗ Initial commit failed: " << result.errorMessage << std::endl;
+            std::cout << "✗ Mining start failed: " << result.errorMessage << std::endl;
             return 1;
         }
         
-        // Wait for confirmation and get the commitment digest
-        id firstCommitmentDigest = getCommitmentDigestFromTransaction(result.transactionId);
-        
-        // Example 2: Wait some time, then reveal and commit again
-        std::cout << "\n2. Waiting 100 ticks, then revealing and making new commitment..." << std::endl;
-        waitForTicks(100);
-        
-        result = client.revealAndCommit(firstCommitmentDigest, securityDeposit);
-        if (result.success) {
-            std::cout << "✓ Reveal and commit successful: " << result.transactionId << std::endl;
+        // Example 2: Continue mining for several cycles
+        std::cout << "\n2. Continue mining for 5 cycles..." << std::endl;
+        for (int i = 0; i < 5; i++) {
+            // Wait for next cycle tick (3 ticks later)
+            waitForTicks(3);
+            
+            result = client.continueMining(securityDeposit);
+            if (result.success) {
+                std::cout << "✓ Cycle " << (i+1) << " mining: " << result.transactionId << std::endl;
+            } else {
+                std::cout << "✗ Cycle " << (i+1) << " failed: " << result.errorMessage << std::endl;
+            }
+            
+            // Show mining stats
+            auto minerInfo = client.getMinerInfo();
+            std::cout << "  Pending rewards: " << minerInfo.totalPendingRewards << " QU" << std::endl;
         }
         
-        id secondCommitmentDigest = getCommitmentDigestFromTransaction(result.transactionId);
-        
-        // Example 3: Continue the cycle
-        std::cout << "\n3. Another reveal and commit cycle..." << std::endl;
-        waitForTicks(150);
-        
-        result = client.revealAndCommit(secondCommitmentDigest, securityDeposit);
-        id thirdCommitmentDigest = getCommitmentDigestFromTransaction(result.transactionId);
-        
-        // Example 4: Final reveal to get back deposit
-        std::cout << "\n4. Making final reveal..." << std::endl;
-        waitForTicks(200);
-        
-        result = client.finalReveal(thirdCommitmentDigest);
+        // Example 3: Stop mining
+        std::cout << "\n3. Stopping mining..." << std::endl;
+        waitForTicks(3);
+        result = client.stopMining();
         if (result.success) {
-            std::cout << "✓ Final reveal successful, security deposit returned" << std::endl;
+            std::cout << "✓ Mining stopped: " << result.transactionId << std::endl;
         }
         
     } catch (const std::exception& e) {
