@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 using namespace QPI;
 
@@ -19,6 +19,9 @@ struct RANDOM_CONTRACT_STATE
     uint64 minimumSecurityDeposit;
     uint32 revealTimeoutBlocks;
     uint64 contractFeePercentage; // In basis points (e.g., 100 = 1%)
+    
+    // Valid deposit amounts (powers of 10)
+    uint64 validDepositAmounts[16]; // 1, 10, 100, ..., 1,000,000,000,000,000
     
     // Commitment tracking
     struct EntropyCommitment {
@@ -70,6 +73,7 @@ public:
         uint32 revealTimeoutBlocks;
         uint64 contractFeePercentage;
         uint32 activeCommitments;
+        uint64 validDepositAmounts[16]; // Show valid deposit amounts
     };
 
     struct GetUserCommitments_input
@@ -156,7 +160,13 @@ private:
         // Process new commitment if provided
         if (hasNewCommit)
         {
-            // Check minimum security deposit for new commits
+            // Check if deposit amount is valid (must be power of 10)
+            if (!isValidDepositAmount(invocatorAmount))
+            {
+                return; // Invalid deposit amount
+            }
+
+            // Check minimum security deposit
             if (invocatorAmount < state.minimumSecurityDeposit)
             {
                 return; // Insufficient security deposit
@@ -222,6 +232,12 @@ private:
         output.revealTimeoutBlocks = state.revealTimeoutBlocks;
         output.contractFeePercentage = state.contractFeePercentage;
         
+        // Copy valid deposit amounts
+        for (int i = 0; i < 16; i++)
+        {
+            output.validDepositAmounts[i] = state.validDepositAmounts[i];
+        }
+        
         // Count active (unrevealed) commitments
         uint32 activeCount = 0;
         for (uint32 i = 0; i < state.commitmentCount; i++)
@@ -277,15 +293,47 @@ private:
         state.totalCommits = 0;
         state.totalReveals = 0;
         state.totalSecurityDepositsLocked = 0;
-        state.minimumSecurityDeposit = 1000000; // 1 QU minimum
+        state.minimumSecurityDeposit = 1000; // 1,000 QU minimum (not 1M!)
         state.revealTimeoutBlocks = 1000; // 1000 ticks timeout
         state.contractFeePercentage = 100; // 1% fee
         state.commitmentCount = 0;
+        
+        // Initialize valid deposit amounts (powers of 10)
+        // 1, 10, 100, 1K, 10K, 100K, 1M, 10M, 100M, 1B, 10B, 100B, 1T, 10T, 100T, 1000T
+        state.validDepositAmounts[0] = 1ULL;                    // 1 QU
+        state.validDepositAmounts[1] = 10ULL;                   // 10 QU
+        state.validDepositAmounts[2] = 100ULL;                  // 100 QU
+        state.validDepositAmounts[3] = 1000ULL;                 // 1K QU
+        state.validDepositAmounts[4] = 10000ULL;                // 10K QU
+        state.validDepositAmounts[5] = 100000ULL;               // 100K QU
+        state.validDepositAmounts[6] = 1000000ULL;              // 1M QU
+        state.validDepositAmounts[7] = 10000000ULL;             // 10M QU
+        state.validDepositAmounts[8] = 100000000ULL;            // 100M QU
+        state.validDepositAmounts[9] = 1000000000ULL;           // 1B QU
+        state.validDepositAmounts[10] = 10000000000ULL;         // 10B QU
+        state.validDepositAmounts[11] = 100000000000ULL;        // 100B QU
+        state.validDepositAmounts[12] = 1000000000000ULL;       // 1T QU
+        state.validDepositAmounts[13] = 10000000000000ULL;      // 10T QU
+        state.validDepositAmounts[14] = 100000000000000ULL;     // 100T QU
+        state.validDepositAmounts[15] = 1000000000000000ULL;    // 1000T QU
         
         qpi.setMem(state.commitments, 0, sizeof(state.commitments));
     }
 
 private:
+    // Check if deposit amount is a valid power of 10
+    bool isValidDepositAmount(uint64 amount)
+    {
+        for (int i = 0; i < 16; i++)
+        {
+            if (amount == state.validDepositAmounts[i])
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     id computeHash(const bit_4096& data)
     {
         id result;
