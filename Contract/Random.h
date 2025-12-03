@@ -139,7 +139,7 @@ private:
                         {
                             // SUCCESSFUL REVEAL - Add entropy to pool
                             updateEntropyPool(input.revealedBits);
-                            
+
                             // Return full deposit to successful miner
                             qpi.transfer(invocatorId, state.commitments[i].amount);
                             
@@ -379,7 +379,7 @@ private:
         m256i result;
         result.m256i_u64[0] = a.m256i_u64[0] ^ b.m256i_u64[0];
         result.m256i_u64[1] = a.m256i_u64[1] ^ b.m256i_u64[1];
-        result.m256i_u64[2] = a.m256i_u64[2] ^ b.m256i_u64[2];
+        result.m256i_u64[2] = a.m256i_u64[2] ^ b.m256i_u64[3];
         result.m256i_u64[3] = a.m256i_u64[3] ^ b.m256i_u64[3];
         return result;
     }
