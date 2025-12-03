@@ -62,20 +62,21 @@ The Perfect Flow:
 
 C++
 
-// Tick 5: generate E1. Send zeros in revealed, send hash(E1) as committed
-
-// Tick 8: generate E2. Send E1 as revealed, send hash(E2) as committed  
-
+// Tick 5: generate E1. Send zeros in revealed, send hash(E1) as committed\
+// Tick 8: generate E2. Send E1 as revealed, send hash(E2) as committed\
 // Tick 11: generate nothing. Send E2 in revealed, send zeros in committed, use zero amount
 
 This is cryptographically sound, economically secure, and truly decentralized!
 
 Security Guarantees:
-Unpredictability: Random bytes depend on future entropy reveals
-Manipulation resistance: Can't influence without costly participation
-Availability: Always produces randomness (even with tick entropy)
-Fairness: All participants get equal access to randomness
-Sustainability: Economic model rewards honest participation
+
+Unpredictability: Random bytes depend on future entropy reveals.\
+Manipulation resistance: Can't influence without costly participation.\
+Availability: Always produces randomness (even with tick entropy).\
+Fairness: All participants get equal access to randomness.\
+Sustainability: Economic model rewards honest participation.
+
 The system is now production-ready for secure random number generation on Qubic!
+
 
 Any application needing cryptographically secure randomness can safely use this contract. 🔒✨
