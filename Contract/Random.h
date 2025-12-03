@@ -18,7 +18,6 @@ struct RANDOM_CONTRACT_STATE
     // Contract configuration
     uint64 minimumSecurityDeposit;
     uint32 revealTimeoutTicks; // 3 ticks for reveal
-    uint64 entropyMinerSharePercentage; // 50% to miners
     
     // Valid deposit amounts (powers of 10)
     uint64 validDepositAmounts[16];
@@ -34,26 +33,18 @@ struct RANDOM_CONTRACT_STATE
     } commitments[1024];
     
     uint32 commitmentCount;
-    
-    // Revenue tracking for shareholder distribution
-    uint64 totalRevenue;
-    uint64 pendingShareholderDistribution;
-    uint64 pendingMinerRewards;
-    uint64 entropySalesRevenue;
-    uint64 entropySalesCount;
 };
 
 struct RANDOM : public ContractBase
 {
 public:
-    // PROCEDURES (Write Operations)
+    // MAIN PROCEDURE - Does everything: commit, reveal, returns random bytes
     struct RevealAndCommit_input
     {
         bit_4096 revealedBits;  // Previous entropy to reveal (or zeros for first commit)
         id committedDigest;     // Hash of new entropy to commit (or zeros if stopping)
     };
     
-    // NOW RETURNS RANDOM BYTES!
     struct RevealAndCommit_output
     {
         uint8 randomBytes[32];      // Fresh random bytes generated from entropy pool
@@ -64,18 +55,7 @@ public:
         uint64 rewardEarned;        // Reward earned from reveal (if any)
     };
 
-    struct BuyEntropy_input
-    {
-        uint32 numberOfBytes; // Max 32
-        m256i nonce;         // Optional nonce
-    };
-    struct BuyEntropy_output
-    {
-        uint8 randomBytes[32];
-        uint64 entropyVersion;
-    };
-
-    // FUNCTIONS (Read-Only Operations) - Just for info now
+    // READ-ONLY FUNCTIONS - For information only
     struct GetContractInfo_input
     {
     };
@@ -86,12 +66,10 @@ public:
         uint64 totalSecurityDepositsLocked;
         uint64 minimumSecurityDeposit;
         uint32 revealTimeoutTicks;
-        uint64 entropyMinerSharePercentage;
         uint32 activeCommitments;
         uint64 validDepositAmounts[16];
-        uint64 totalRevenue;
-        uint64 entropySalesRevenue;
         uint32 currentTick;
+        uint64 entropyPoolVersion;
     };
 
     struct GetUserCommitments_input
@@ -111,7 +89,7 @@ public:
     };
 
 private:
-    // PROCEDURE: RevealAndCommit (Write Operation) - DOES ALL THE JOB + RETURNS RANDOM BYTES
+    // THE ONLY PROCEDURE - RevealAndCommit does all the work
     PUBLIC_PROCEDURE(RevealAndCommit)
     {
         const auto& input = qpi.input<RevealAndCommit_input>();
@@ -144,7 +122,6 @@ private:
                         {
                             // Timeout exceeded - security deposit is forfeited
                             state.contractFeeReserve += state.commitments[i].amount;
-                            state.pendingMinerRewards += state.commitments[i].amount;
                             output.revealSuccessful = false;
                         }
                         else
@@ -152,8 +129,8 @@ private:
                             // Valid reveal - add entropy to pool
                             updateEntropyPool(input.revealedBits);
 
-                            // Calculate reward
-                            uint64 reward = calculateMinerReward(state.commitments[i].amount);
+                            // Calculate reward (5% of deposit)
+                            uint64 reward = (state.commitments[i].amount * 5) / 100;
                             uint64 totalReturn = state.commitments[i].amount + reward;
                             
                             // Return security deposit + reward to miner
@@ -203,52 +180,12 @@ private:
             }
         }
 
-        // Step 3: ALWAYS GENERATE AND RETURN FRESH RANDOM BYTES
+        // Step 3: ALWAYS generate and return fresh random bytes
         generateRandomBytes(output.randomBytes, 32);
         output.entropyVersion = state.entropyPoolVersion;
     }
 
-    // PROCEDURE: BuyEntropy (Write Operation) - Paid version
-    PUBLIC_PROCEDURE(BuyEntropy)
-    {
-        const auto& input = qpi.input<BuyEntropy_input>();
-        auto buyer = qpi.invocator();
-        auto payment = qpi.invocationReward();
-        
-        if (input.numberOfBytes > 32 || input.numberOfBytes == 0)
-        {
-            qpi.setMem(&output, 0, sizeof(output));
-            return;
-        }
-
-        // Calculate price (e.g., 100 QU per byte)
-        uint64 pricePerByte = 100;
-        uint64 totalPrice = input.numberOfBytes * pricePerByte;
-        
-        if (payment < totalPrice)
-        {
-            qpi.setMem(&output, 0, sizeof(output));
-            return;
-        }
-
-        // Generate random bytes with nonce
-        generateRandomBytesWithNonce(output.randomBytes, input.numberOfBytes, input.nonce);
-        output.entropyVersion = state.entropyPoolVersion;
-
-        // Record revenue
-        state.entropySalesRevenue += payment;
-        state.totalRevenue += payment;
-        state.entropySalesCount++;
-
-        // Split revenue: 50% to miners, 50% to shareholders
-        uint64 minerShare = (payment * state.entropyMinerSharePercentage) / 100;
-        uint64 shareholderShare = payment - minerShare;
-
-        state.pendingMinerRewards += minerShare;
-        state.pendingShareholderDistribution += shareholderShare;
-    }
-
-    // FUNCTION: GetContractInfo (Read-Only)
+    // READ-ONLY: Get contract statistics
     PUBLIC_FUNCTION(GetContractInfo)
     {
         auto currentTick = qpi.tick();
@@ -258,10 +195,8 @@ private:
         output.totalSecurityDepositsLocked = state.totalSecurityDepositsLocked;
         output.minimumSecurityDeposit = state.minimumSecurityDeposit;
         output.revealTimeoutTicks = state.revealTimeoutTicks;
-        output.entropyMinerSharePercentage = state.entropyMinerSharePercentage;
-        output.totalRevenue = state.totalRevenue;
-        output.entropySalesRevenue = state.entropySalesRevenue;
         output.currentTick = currentTick;
+        output.entropyPoolVersion = state.entropyPoolVersion;
         
         for (int i = 0; i < 16; i++)
         {
@@ -279,7 +214,7 @@ private:
         output.activeCommitments = activeCount;
     }
 
-    // FUNCTION: GetUserCommitments (Read-Only)
+    // READ-ONLY: Get user's commitment history
     PUBLIC_FUNCTION(GetUserCommitments)
     {
         const auto& input = qpi.input<GetUserCommitments_input>();
@@ -310,21 +245,18 @@ private:
 
     void EndEpoch()
     {
-        // Distribute rewards to shareholders (like in Quottery)
-        if (state.pendingShareholderDistribution > 0)
-        {
-            qpi.transferShareToShareOwners(state.pendingShareholderDistribution);
-            state.pendingShareholderDistribution = 0;
-        }
+        // Called at the end of each epoch
+        // Could distribute accumulated fees to shareholders if needed
     }
 
     REGISTER_USER_FUNCTIONS_AND_PROCEDURES()
     {
+        // Read-only functions
         REGISTER_USER_FUNCTION(GetContractInfo, 1);
         REGISTER_USER_FUNCTION(GetUserCommitments, 2);
         
+        // The only procedure
         REGISTER_USER_PROCEDURE(RevealAndCommit, 1);
-        REGISTER_USER_PROCEDURE(BuyEntropy, 2);
     }
 
     INITIALIZE()
@@ -335,18 +267,11 @@ private:
         state.totalCommits = 0;
         state.totalReveals = 0;
         state.totalSecurityDepositsLocked = 0;
-        state.minimumSecurityDeposit = 1000;
-        state.revealTimeoutTicks = 3; // FIXED: 3 ticks timeout
-        state.entropyMinerSharePercentage = 50;
+        state.minimumSecurityDeposit = 1000; // 1K QU minimum
+        state.revealTimeoutTicks = 3; // 3 ticks timeout
         state.commitmentCount = 0;
         
-        state.totalRevenue = 0;
-        state.pendingShareholderDistribution = 0;
-        state.pendingMinerRewards = 0;
-        state.entropySalesRevenue = 0;
-        state.entropySalesCount = 0;
-        
-        // Initialize valid deposit amounts (powers of 10)
+        // Initialize valid deposit amounts (powers of 10: 1, 10, 100, 1K, 10K, etc.)
         for (int i = 0; i < 16; i++)
         {
             state.validDepositAmounts[i] = 1ULL;
@@ -370,24 +295,8 @@ private:
         // Generate hash
         id finalHash = computeHashFromM256i(combinedEntropy);
         
-        // Copy requested bytes
+        // Copy requested bytes (max 32)
         qpi.copyMem(output, finalHash.bytes, (numBytes > 32) ? 32 : numBytes);
-    }
-    
-    void generateRandomBytesWithNonce(uint8* output, uint32 numBytes, const m256i& nonce)
-    {
-        // Combine entropy pool, tick, and nonce
-        m256i combinedEntropy = xorM256i(state.currentEntropyPool, nonce);
-        m256i tickEntropy = { qpi.tick(), qpi.tick() >> 32, 0, 0 };
-        combinedEntropy = xorM256i(combinedEntropy, tickEntropy);
-        
-        id finalHash = computeHashFromM256i(combinedEntropy);
-        qpi.copyMem(output, finalHash.bytes, (numBytes > 32) ? 32 : numBytes);
-    }
-
-    uint64 calculateMinerReward(uint64 depositAmount)
-    {
-        return (depositAmount * 5) / 100; // 5% reward
     }
 
     bool isValidDepositAmount(uint64 amount)
