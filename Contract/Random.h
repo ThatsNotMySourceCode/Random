@@ -44,7 +44,7 @@ struct RANDOM_CONTRACT_STATE
         id minerId;
         uint64 deposit;
         uint64 lastEntropyVersion;
-        uint32 lastRevealTick; // NEW: per-miner freshness
+        uint32 lastRevealTick; 
     } recentMiners[MAX_RECENT_MINERS];
     uint32 recentMinerCount;
 
@@ -575,5 +575,6 @@ private:
         return true;
     }
 };
+
 
 
