@@ -2,11 +2,11 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
-#include "SimpleRandomClient.cpp"
+#include "SimpleRandomClient_cli.cpp"
 
-// Remove main() from SimpleRandomClient in case you test with this class.
+// Remove main() from SimpleRandomClient_cli.cpp before using this as a test harness!
 
-// External: get_current_tick and wait_for_tick now use CLI-based tick polling from updated SimpleRandomClient.cpp
+// Use CLI-based tick polling from updated SimpleRandomClient_cli.cpp
 void waitUntilTick(int targetTick) {
     int cur = get_current_tick();
     while(cur < targetTick) {
@@ -16,7 +16,7 @@ void waitUntilTick(int targetTick) {
     }
 }
 
-// Example 1: Exact flow as specified - Tick 5 → 8 → 11
+// Example 1: Exact single 3-tick flow
 void demonstrateExactFlow() {
     uint64 deposit = 10000; // 10K QU
 
@@ -41,7 +41,7 @@ void demonstrateExactFlow() {
 
     miner_commit(E1, digestE2, deposit);
 
-    // Tick 11: generate nothing. Send E2 in revealed, send zeros in committed, use zero amount
+    // Tick 11: reveal E2, stop mining
     std::cout << "\nTick 11: Reveal E2, stop mining" << std::endl;
     waitUntilTick(11);
 
@@ -49,10 +49,9 @@ void demonstrateExactFlow() {
     miner_commit(E2, zeroCommit, 0);
 }
 
-// Example 2: Extended mining with proper 3-tick intervals
+// Example 2: Multiple cycles with fixed interval
 void demonstrateExtendedMining() {
     uint64 deposit = 50000; // 50K QU
-
     std::cout << "\n=== Extended Mining (Multiple 3-Tick Cycles) ===" << std::endl;
 
     uint32_t startTick = 20; // Start at tick 20
@@ -90,7 +89,7 @@ void demonstrateExtendedMining() {
     miner_commit(currentEntropy, zeroCommit, 0);
 }
 
-// Example 3: Three parallel flows (3N, 3N+1, 3N+2)
+// Example 3: Three parallel mining flows
 void demonstrateThreeFlows() {
     uint64 deposit = 100000; // 100K QU each
 
@@ -152,12 +151,11 @@ void demonstrateThreeFlows() {
     miner_commit(entropyC, zeroCommit, 0);
 }
 
-// Query the contract for price directly! (only numberOfBytes and minMinerDeposit now)
+// Query the contract for price directly (only numberOfBytes and minMinerDeposit now)
 uint64 query_price(uint32_t numBytes, uint64 minDeposit);
 
 void demonstrateBuyEntropyOnce() {
     std::cout << "\n=== Buy Entropy as a Customer ===" << std::endl;
-    // Buy 32 random bytes, min deposit 100K QU, get correct fee from contract!
     uint32_t wants = 32;
     uint64 minDep = 100000;
     uint64 fee = query_price(wants, minDep);
