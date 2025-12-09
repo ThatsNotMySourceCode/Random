@@ -110,7 +110,6 @@ BuyEntropy(numBytes, minFreshReveals, minMinerDeposit, fee)
 - `RevealAndCommit`: For miners to commit/reveal entropy. Requires deposit.
 - `BuyEntropy`: For anyone to purchase random bytes with on-chain proof of freshness/security. Requires on-chain price (use `QueryPrice` before sending).
 - `QueryPrice`: Public function returning the exact fee for any BuyEntropy request.
-- `ClaimMinerEarnings`: For miners (usually called by smart contract at epoch end).
 - `GetContractInfo`, `GetUserCommitments`: Read-only status/info functions for UIs/wallets/bots.
 
 ---
