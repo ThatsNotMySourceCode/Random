@@ -30,7 +30,7 @@ struct RevealAndCommit_input {
 };
 ```
 
-- **Reveal must happen within 9 ticks** (configurable). Late = lose deposit (unless the tick is empty; then your deposit is refunded).
+- **Reveal must happen within 9 ticks** (configurable in contract, not by user). Late = lose deposit (unless the tick is empty; then your deposit is refunded).
 - **Deposit is chosen by miner** (minimum: 1 QU, then 10, 100, etc). Higher deposit increases miner's ranking and reward share.
 
 ---
