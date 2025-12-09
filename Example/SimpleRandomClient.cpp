@@ -1,270 +1,210 @@
-#include <immintrin.h>
-#include <openssl/sha.h>
 #include <iostream>
+#include <vector>
+#include <string>
 #include <cstring>
-#include <queue>
+#include <cstdlib>
+#include <sstream>
+#include <iomanip>
 #include <thread>
 #include <chrono>
+#include <openssl/sha.h>
 
-class SimpleRandomClient {
-private:
-    static const char* RANDOM_CONTRACT_ID = "DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    
-    // Store entropy for reveal cycles
-    std::queue<bit_4096> pendingReveals;
-    
-public:
-    struct MiningResult {
-        bool success;
-        std::string transactionId;
-        uint8 randomBytes[32];      // The ONLY way to get random bytes!
-        uint64 entropyVersion;      // Proof of freshness
-        bool revealSuccessful;
-        bool commitSuccessful;
-        uint64 depositReturned;
-    };
-    
-    // Generate 4096 bits of entropy using hardware RNG
-    bit_4096 generateEntropy() {
-        bit_4096 entropy;
-        for (int i = 0; i < 64; i++) {
-            uint64_t value;
-            if (_rdseed64_step(&value) == 1) {
-                entropy.data[i] = value;
-            } else {
-                // Fallback entropy source
-                entropy.data[i] = rand() ^ (rand() << 32);
-            }
-        }
-        return entropy;
-    }
-    
-    // Hash entropy with SHA-256
-    id hashEntropy(const bit_4096& entropy) {
-        id result;
-        SHA256_CTX ctx;
-        SHA256_Init(&ctx);
-        SHA256_Update(&ctx, &entropy, sizeof(entropy));
-        SHA256_Final(result.bytes, &ctx);
-        return result;
-    }
-    
-    // THE ONLY way to get randomness - must mine entropy
-    MiningResult revealAndCommit(const bit_4096& revealBits, const id& commitDigest, uint64 depositAmount) {
-        RevealAndCommit_input input;
-        input.revealedBits = revealBits;
-        input.committedDigest = commitDigest;
-        
-        // Send transaction
-        Transaction tx;
-        tx.sourcePublicKey = getMyPublicKey();
-        tx.destinationPublicKey = parsePublicKey(RANDOM_CONTRACT_ID);
-        tx.amount = depositAmount;
-        tx.tick = getCurrentTick() + 1;
-        tx.inputType = 1;  // RevealAndCommit is the ONLY procedure
-        tx.inputSize = 544;
-        
-        memcpy(tx.input, &input, sizeof(input));
-        signTransaction(tx);
-        auto result = broadcastTransaction(tx);
-        
-        // Extract results
-        MiningResult miningResult;
-        miningResult.success = result.success;
-        miningResult.transactionId = result.transactionId;
-        
-        if (result.success) {
-            RevealAndCommit_output output;
-            memcpy(&output, result.outputData, sizeof(output));
-            
-            memcpy(miningResult.randomBytes, output.randomBytes, 32);
-            miningResult.entropyVersion = output.entropyVersion;
-            miningResult.revealSuccessful = output.revealSuccessful;
-            miningResult.commitSuccessful = output.commitSuccessful;
-            miningResult.depositReturned = output.depositReturned;
-        }
-        
-        return miningResult;
-    }
-    
-    // Proper 3-tick temporary mining
-    MiningResult getRandomnessTemporarily(uint64 depositAmount) {
-        std::cout << "\n=== Temporary Mining for Randomness (3-Tick Flow) ===" << std::endl;
-        
-        uint32 startTick = getCurrentTick() + 1;
-        
-        // Step 1: Generate entropy and commit
-        bit_4096 entropy = generateEntropy();
-        id digest = hashEntropy(entropy);
-        bit_4096 zeroReveal = {};
-        
-        waitUntilTick(startTick);
-        auto result1 = revealAndCommit(zeroReveal, digest, depositAmount);
-        if (!result1.success) {
-            return result1;
-        }
-        
-        std::cout << "Tick " << startTick << ": Initial commit, random bytes: ";
-        printRandomBytes(result1.randomBytes, 8);
-        
-        // Step 2: Wait 3 ticks and reveal
-        waitUntilTick(startTick + 3);
-        id zeroCommit = {};
-        auto result2 = revealAndCommit(entropy, zeroCommit, 0);
-        
-        if (result2.success) {
-            std::cout << "Tick " << (startTick + 3) << ": Final reveal, random bytes: ";
-            printRandomBytes(result2.randomBytes, 8);
-            std::cout << "Deposit returned: " << result2.depositReturned << " QU" << std::endl;
-        }
-        
-        return result2;
-    }
-    
-    // Helper: Start mining with proper flow
-    MiningResult startMining(uint64 depositAmount) {
-        bit_4096 entropy = generateEntropy();
-        pendingReveals.push(entropy);
-        
-        id digest = hashEntropy(entropy);
-        bit_4096 zeroReveal = {};
-        
-        return revealAndCommit(zeroReveal, digest, depositAmount);
-    }
-    
-    // Helper: Continue mining with proper flow
-    MiningResult continueMining(uint64 depositAmount) {
-        if (pendingReveals.empty()) {
-            throw std::runtime_error("No pending reveals - call startMining first");
-        }
-        
-        // Get previous entropy to reveal
-        bit_4096 previousEntropy = pendingReveals.front();
-        pendingReveals.pop();
-        
-        // Generate new entropy for next cycle
-        bit_4096 newEntropy = generateEntropy();
-        pendingReveals.push(newEntropy);
-        
-        id newDigest = hashEntropy(newEntropy);
-        
-        return revealAndCommit(previousEntropy, newDigest, depositAmount);
-    }
-    
-    // Helper: Stop mining
-    MiningResult stopMining() {
-        if (pendingReveals.empty()) {
-            throw std::runtime_error("No pending reveals to stop");
-        }
-        
-        bit_4096 finalEntropy = pendingReveals.front();
-        pendingReveals.pop();
-        
-        id zeroCommit = {};
-        return revealAndCommit(finalEntropy, zeroCommit, 0);
-    }
-    
-    // Get contract information (no randomness)
-    struct ContractInfo {
-        uint64 totalCommits;
-        uint64 totalReveals;
-        uint64 entropyPoolVersion;
-        uint32 activeCommitments;
-        uint64 totalRevenue;
-        uint64 lostDepositsRevenue;
-        uint64 totalSecurityDepositsLocked;
-        uint32 revealTimeoutTicks;
-        uint64 minimumSecurityDeposit;
-    };
-    
-    ContractInfo getContractInfo() {
-        GetContractInfo_input input; // Empty
-        
-        auto response = makeContractQuery(RANDOM_CONTRACT_ID, 1, &input, sizeof(input));
-        
-        ContractInfo info = {};
-        if (response.success) {
-            GetContractInfo_output output;
-            memcpy(&output, response.data, sizeof(output));
-            
-            info.totalCommits = output.totalCommits;
-            info.totalReveals = output.totalReveals;
-            info.entropyPoolVersion = output.entropyPoolVersion;
-            info.activeCommitments = output.activeCommitments;
-            info.totalRevenue = output.totalRevenue;
-            info.lostDepositsRevenue = output.lostDepositsRevenue;
-            info.totalSecurityDepositsLocked = output.totalSecurityDepositsLocked;
-            info.revealTimeoutTicks = output.revealTimeoutTicks;
-            info.minimumSecurityDeposit = output.minimumSecurityDeposit;
-        }
-        
-        return info;
-    }
+#define NODE_IP "00.00.00.000"
+#define NODE_PORT 21841
+#define SC_ID "DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANMIG"
+#define TX_TYPE_MINER 1
+#define TX_TYPE_BUY   2
+#define TX_TYPE_QUERYPRICE 3
 
-    // Helper function for proper tick timing
-    void waitUntilTick(uint32 targetTick) {
-        uint32 currentTick = getCurrentTick();
-        while (currentTick < targetTick) {
-            std::cout << "Waiting for tick " << targetTick << " (current: " << currentTick << ")" << std::endl;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            currentTick = getCurrentTick();
-        }
-    }
+#define EXTRA_DATA_SIZE_MINER 544
+#define EXTRA_DATA_SIZE_BUY   32
+#define EXTRA_DATA_SIZE_PRICE 16
+#define SEED "yourminerseedhere"
+#define REVEAL_TICKS 9
 
-private:
-    void printRandomBytes(const uint8* bytes, int count) {
-        for (int i = 0; i < count; i++) {
-            printf("%02x ", bytes[i]);
-        }
-        std::cout << "..." << std::endl;
-    }
-    
-    // Helper function implementations (replace with actual Qubic client code)
-    PublicKey getMyPublicKey() {
-        PublicKey pk = {};
-        return pk;
-    }
-    
-    PublicKey parsePublicKey(const char* contractId) {
-        PublicKey pk = {};
-        return pk;
-    }
-    
-    uint32 getCurrentTick() {
-        return 1000; // Placeholder - replace with actual implementation
-    }
-    
-    void waitForTicks(uint32 ticks) {
-        std::cout << "Waiting " << ticks << " ticks..." << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(ticks * 100));
-    }
-    
-    void signTransaction(Transaction& tx) {
-        // Sign transaction with your private key
-    }
-    
-    struct TransactionResult {
-        bool success;
-        std::string transactionId;
-        uint8* outputData;
-    };
-    
-    TransactionResult broadcastTransaction(const Transaction& tx) {
-        TransactionResult result;
-        result.success = true; // Placeholder
-        result.transactionId = "tx_123456";
-        return result;
-    }
-    
-    struct QueryResponse {
-        bool success;
-        uint8* data;
-    };
-    
-    QueryResponse makeContractQuery(const char* contractId, uint32 functionIndex, 
-                                  void* input, uint32 inputSize) {
-        QueryResponse response;
-        response.success = true; // Placeholder
-        return response;
-    }
+typedef unsigned char uint8;
+typedef unsigned long long uint64;
+typedef uint64 bit_4096_data[64];
+
+struct bit_4096 {
+    bit_4096_data data;
 };
+
+struct id {
+    uint8 bytes[32];
+    id() { std::memset(bytes, 0, 32); }
+};
+
+bit_4096 generateEntropy() {
+    bit_4096 entropy;
+    for (int i = 0; i < 64; ++i) {
+        uint64 val;
+        int success = 0;
+        for (int tries = 0; tries < 10 && !success; ++tries) {
+            success = _rdseed64_step(&val);
+        }
+        if (!success) {
+            std::cerr << "RDSEED failure after 10 tries\n";
+            val = std::chrono::high_resolution_clock::now().time_since_epoch().count(); // fallback (NOT SAFE)
+        }
+        entropy.data[i] = val;
+    }
+    return entropy;
+}
+
+id hashEntropy(const bit_4096& entropy) {
+    id result;
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);
+    SHA256_Update(&ctx, &entropy, sizeof(entropy));
+    SHA256_Final(result.bytes, &ctx);
+    return result;
+}
+
+int get_current_tick() {
+    std::ostringstream cmd;
+    cmd << "./qubic-cli -nodeip " << NODE_IP << " -getcurrenttick";
+    FILE* pipe = popen(cmd.str().c_str(), "r");
+    if (!pipe) return -1;
+    char buffer[128];
+    std::string output;
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) output += buffer;
+    pclose(pipe);
+    size_t pos = output.find("Tick:");
+    if (pos != std::string::npos) return std::stoi(output.substr(pos + 5));
+    return -1;
+}
+
+std::string toHex(const uint8* data, size_t sz) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < sz; ++i)
+        oss << std::hex << std::setw(2) << std::setfill('0') << (int)data[i];
+    return oss.str();
+}
+std::string bit4096ToHex(const bit_4096& b) {
+    return toHex(reinterpret_cast<const uint8*>(&b), sizeof(bit_4096));
+}
+
+// --- Query contract for price (transparency!) ---
+uint64 query_price(uint32_t numBytes, uint32_t minFresh, uint64 minDeposit) {
+    std::ostringstream extra;
+    // Pack QueryPrice_input: 4 bytes numBytes, 4 bytes minFresh, 8 bytes minDeposit (little-endian)
+    extra << std::hex
+          << std::setw(8) << std::setfill('0') << numBytes
+          << std::setw(8) << minFresh
+          << std::setw(16) << minDeposit;
+
+    std::ostringstream cmd;
+    cmd << "./qubic-cli"
+        << " -nodeip " << NODE_IP
+        << " -nodeport " << NODE_PORT
+        << " -sendcustomfunction " << SC_ID
+        << " " << TX_TYPE_QUERYPRICE << " " << EXTRA_DATA_SIZE_PRICE
+        << " " << extra.str();
+
+    FILE* pipe = popen(cmd.str().c_str(), "r");
+    if (!pipe) return 0;
+    char buffer[128];
+    std::string output;
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) output += buffer;
+    pclose(pipe);
+
+    // Parse for "price: "
+    size_t pos = output.find("price:");
+    if (pos != std::string::npos) 
+        return std::stoull(output.substr(pos + 6));
+    std::cout << "Unable to parse QueryPrice output, got: " << output << std::endl;
+    return 0;
+}
+
+// --- CLI: Entropy Mining (Commit/Reveal) ---
+void miner_commit(const bit_4096& revealBits, const id& commitDigest, uint64 deposit) {
+    std::ostringstream extra;
+    extra << bit4096ToHex(revealBits);
+    extra << toHex(commitDigest.bytes, 32);
+    std::ostringstream cmd;
+    cmd << "./qubic-cli"
+        << " -nodeip " << NODE_IP
+        << " -nodeport " << NODE_PORT
+        << " -seed " << SEED
+        << " -sendcustomtransaction " << SC_ID
+        << " " << TX_TYPE_MINER << " " << deposit << " " << EXTRA_DATA_SIZE_MINER
+        << " " << extra.str();
+    std::cout << "[Miner] Commit: " << cmd.str() << std::endl;
+    int r = system(cmd.str().c_str());
+    if (r == 0) std::cout << "Commit TX sent\n";
+    else std::cerr << "Commit TX failed\n";
+}
+
+// --- CLI: Buy Entropy (Random Bytes as User, price auto-from SC) ---
+void buy_entropy_cli(uint32_t numBytes, uint32_t minFreshReveals, uint64 minMinerDeposit) {
+    // Query the contract for the correct minimum fee
+    uint64 fee = query_price(numBytes, minFreshReveals, minMinerDeposit);
+    if (!fee) {
+        std::cerr << "Could not get price from contract--aborting buy tx!" << std::endl;
+        return;
+    }
+    std::cout << "[Buyer] Required fee for this buy: " << fee << std::endl;
+
+    std::ostringstream extra;
+    extra << std::hex
+          << std::setw(8) << std::setfill('0') << numBytes
+          << std::setw(8) << minFreshReveals
+          << std::setw(16) << minMinerDeposit
+          << std::string((EXTRA_DATA_SIZE_BUY-4-4-8)*2, '0'); // Pad to 32 bytes
+
+    std::ostringstream cmd;
+    cmd << "./qubic-cli"
+        << " -nodeip " << NODE_IP
+        << " -nodeport " << NODE_PORT
+        << " -seed " << SEED
+        << " -sendcustomtransaction " << SC_ID
+        << " " << TX_TYPE_BUY << " " << fee << " " << EXTRA_DATA_SIZE_BUY
+        << " " << extra.str();
+    std::cout << "[Buyer] BuyEntropy: " << cmd.str() << std::endl;
+    int r = system(cmd.str().c_str());
+    if (r == 0) std::cout << "BuyEntropy TX sent\n";
+    else std::cerr << "BuyEntropy TX failed\n";
+}
+
+void wait_for_tick(int targetTick) {
+    int cur = get_current_tick();
+    while (cur < targetTick) {
+        std::cout << "Current Tick: " << cur << ", Waiting for " << targetTick << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        cur = get_current_tick();
+    }
+}
+
+int main() {
+    // Mining example (rolling)
+    uint64 deposit = 100000; // 100K QU
+    int cycle = 0;
+
+    while (true) {
+        // --- Commit phase ---
+        bit_4096 commitEntropy = generateEntropy();
+        id nextDigest = hashEntropy(commitEntropy);
+        bit_4096 zeroReveal = {};
+        miner_commit(zeroReveal, nextDigest, deposit);
+        // Get commit tick to schedule reveal
+        int commitTick = get_current_tick();
+        int revealTick = commitTick + REVEAL_TICKS;
+        std::cout << "Committed at tick: " << commitTick << ", will reveal at tick: " << revealTick << std::endl;
+
+        // --- Wait and Reveal phase ---
+        wait_for_tick(revealTick);
+        miner_commit(commitEntropy, id{}, 0); // reveal previous entropy, no new commit
+
+        std::cout << "Mining cycle " << (++cycle) << " complete.\n";
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+
+        // --- (Buy demo: request secure randomness occasionally) ---
+        if (cycle % 5 == 0) {
+            uint32_t wants = 32, minFresh = 3;
+            uint64 minDep = 100000;
+            buy_entropy_cli(wants, minFresh, minDep);
+        }
+    }
+    return 0;
+}
