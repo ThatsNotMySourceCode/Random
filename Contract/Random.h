@@ -159,6 +159,8 @@ public:
     // Mining: RevealAndCommit 
     PUBLIC_PROCEDURE(RevealAndCommit)
     {
+		processTimeouts();
+			
         // Empty tick handling:
         if(qpi.numberOfTickTransactions() == -1) {
             // Tick is empty: refund all pending commitments whose deadline is now
@@ -302,6 +304,8 @@ public:
     // BUY ENTROPY / RANDOM BYTES 
     PUBLIC_PROCEDURE(BuyEntropy)
     {
+		processTimeouts();
+			
         if(qpi.numberOfTickTransactions() == -1) {
             qpi.setMem(&output, 0, sizeof(output));
             output.success = false;
@@ -414,6 +418,8 @@ public:
     // Epoch End: Distribute pools
     void EndEpoch()
     {
+		processTimeouts();
+		
         // Distribute miner pool
         if(state.minerEarningsPool > 0 && state.recentMinerCount > 0) {
             uint64 payout = state.minerEarningsPool / state.recentMinerCount;
@@ -573,3 +579,4 @@ private:
         return true;
     }
 };
+
