@@ -4,10 +4,14 @@ using namespace QPI;
 
 // Max miners to consider for distribution
 #define MAX_RECENT_MINERS 369
+#define ENTROPY_HISTORY_LEN 3 // For 2-tick-back entropy pool
 
 struct RANDOM_CONTRACT_STATE
 {
-    uint64 contractFeeReserve;
+    // Entropy pool history (circular buffer for look-back)
+    m256i entropyHistory[ENTROPY_HISTORY_LEN];
+    uint64 entropyPoolVersionHistory[ENTROPY_HISTORY_LEN];
+    uint32 entropyHistoryHead; // points to most recent
 
     // Global entropy pool - combines all revealed entropy
     m256i currentEntropyPool;
@@ -20,30 +24,30 @@ struct RANDOM_CONTRACT_STATE
 
     // Contract configuration
     uint64 minimumSecurityDeposit;
-    uint32 revealTimeoutTicks; // e.g. 3, 6 or 9 ticks for reveal
+    uint32 revealTimeoutTicks; // now e.g. 9 ticks
 
     // Revenue distribution system
-    uint64 totalRevenue;                    // All revenue generated
-    uint64 pendingShareholderDistribution;  // 50% to Qubic shareholders (from lost deposits + entropy sales)
-    uint64 lostDepositsRevenue;             // From timeout failures - goes to shareholders
+    uint64 totalRevenue;
+    uint64 pendingShareholderDistribution;
+    uint64 lostDepositsRevenue;
 
     // Earnings pools
-    uint64 minerEarningsPool;               // Accumulated earnings for miners (for entropy sales)
-    uint64 shareholderEarningsPool;         // Accumulated for Qubic shareholders
-	
-	uint64 pricePerByte;         // e.g. 10 QU (default)
-	uint64 priceFreshRevealMul;  // e.g. 1 (just multiplies by minFreshReveals)
-	uint64 priceDepositDivisor;  // e.g. 1000 (matches contract formula)
+    uint64 minerEarningsPool;
+    uint64 shareholderEarningsPool;
+
+    // Pricing config
+    uint64 pricePerByte;         // e.g. 10 QU (default)
+    uint64 priceDepositDivisor;  // e.g. 1000 (matches contract formula)
 
     // Epoch tracking for miner rewards
     struct RecentMiner {
         id minerId;
         uint64 deposit;
-        uint64 lastEntropyVersion;        // When miner's last reveal was mixed in
+        uint64 lastEntropyVersion;
     } recentMiners[MAX_RECENT_MINERS];
     uint32 recentMinerCount;
 
-    uint64 lastRevealTick; // Track tick of last entropy reveal
+    uint64 lastRevealTick;
 
     // Valid deposit amounts (powers of 10)
     uint64 validDepositAmounts[16];
@@ -121,17 +125,14 @@ public:
     // SELL ENTROPY (random bytes)
     struct BuyEntropy_input
     {
-        uint32 numberOfBytes;         // 1-32
-        uint32 minFreshReveals;       // Require at least this many new reveals in pool
-        uint64 minMinerDeposit;       // Require each entropy miner to have at least this deposit
+        uint32 numberOfBytes;      // 1-32
+        uint64 minMinerDeposit;    // required deposit of recent miner
     };
-
     struct BuyEntropy_output
     {
         bool success;
         uint8 randomBytes[32];
-        uint64 entropyVersion;
-        uint32 actualFreshReveals;
+        uint64 entropyVersion; // version of pool 2 ticks ago!
         uint64 usedMinerDeposit;
         uint64 usedPoolVersion;
     };
@@ -146,20 +147,36 @@ public:
 	
 	// --------------------------------------------------
     // PRICE QUERY
-	struct QueryPrice_input {
-		uint32 numberOfBytes;
-		uint32 minFreshReveals;
-		uint64 minMinerDeposit;
-	};
-
-	struct QueryPrice_output {
-		uint64 price;
-	};
+    struct QueryPrice_input {
+        uint32 numberOfBytes;
+        uint64 minMinerDeposit;
+    };
+    struct QueryPrice_output {
+        uint64 price;
+    };
 
     // --------------------------------------------------
     // Mining: RevealAndCommit 
     PUBLIC_PROCEDURE(RevealAndCommit)
     {
+        // Empty tick handling:
+        if(qpi.numberOfTickTransactions() == -1) {
+            // Tick is empty: refund all pending commitments whose deadline is now
+            for(uint32 i = 0; i < state.commitmentCount; i++)
+            {
+                if(!state.commitments[i].hasRevealed &&
+                   state.commitments[i].revealDeadlineTick == qpi.tick())
+                {
+                    qpi.transfer(state.commitments[i].invocatorId, state.commitments[i].amount);
+                    state.commitments[i].hasRevealed = true;
+                    state.totalSecurityDepositsLocked -= state.commitments[i].amount;
+                }
+            }
+            // Return blank output (all refunds handled above)
+            qpi.setMem(&output, 0, sizeof(output));
+            return;
+        }
+
         const auto& input = qpi.input<RevealAndCommit_input>();
         auto invocatorId = qpi.invocator();
         auto invocatorAmount = qpi.invocationReward();
@@ -184,7 +201,6 @@ public:
                     {
                         if (currentTick > state.commitments[i].revealDeadlineTick)
                         {
-                            // Timeout - deposit goes to shareholders
                             uint64 lostDeposit = state.commitments[i].amount;
                             state.lostDepositsRevenue += lostDeposit;
                             state.totalRevenue += lostDeposit;
@@ -194,10 +210,8 @@ public:
                         }
                         else
                         {
-                            // Successful reveal - add entropy to pool
                             updateEntropyPool(input.revealedBits);
 
-                            // Return full deposit to successful miner
                             qpi.transfer(invocatorId, state.commitments[i].amount);
 
                             output.revealSuccessful = true;
@@ -206,9 +220,7 @@ public:
                             state.totalReveals++;
                             state.totalSecurityDepositsLocked -= state.commitments[i].amount;
 
-                            // --- Best performance/highest stake ranking logic for RecentMiners ---
-
-                            // Check if miner is already in the list
+                            // Update RecentMiners
                             int32 existingIndex = -1;
                             for(uint32 rm = 0; rm < state.recentMinerCount; ++rm) {
                                 if(isEqualId(state.recentMiners[rm].minerId, invocatorId)) {
@@ -216,8 +228,6 @@ public:
                                     break;
                                 }
                             }
-
-                            // If present, update deposit if this is higher
                             if(existingIndex >= 0) {
                                 if(state.recentMiners[existingIndex].deposit < state.commitments[i].amount) {
                                     state.recentMiners[existingIndex].deposit = state.commitments[i].amount;
@@ -225,7 +235,6 @@ public:
                                 }
                             }
                             else {
-                                // Add new miner
                                 if(state.recentMinerCount < MAX_RECENT_MINERS) {
                                     state.recentMiners[state.recentMinerCount].minerId = invocatorId;
                                     state.recentMiners[state.recentMinerCount].deposit = state.commitments[i].amount;
@@ -233,29 +242,22 @@ public:
                                     state.recentMinerCount++;
                                 }
                                 else {
-                                    // Handle overflow: evict the lowest-stake or least-recent miner
-                                    // Find the lowest-stake; if tie, pick oldest
+                                    // Overflow: evict lowest-stake or least-recent miner
                                     uint32 lowestIx = 0;
                                     for(uint32 rm = 1; rm < MAX_RECENT_MINERS; ++rm) {
-                                        // Lower deposit, or (if equal deposit) older entropy version is less preferred
                                         if(state.recentMiners[rm].deposit < state.recentMiners[lowestIx].deposit ||
-                                            (state.recentMiners[rm].deposit == state.recentMiners[lowestIx].deposit && 
-                                             state.recentMiners[rm].lastEntropyVersion < state.recentMiners[lowestIx].lastEntropyVersion))
-                                        {
+                                           (state.recentMiners[rm].deposit == state.recentMiners[lowestIx].deposit && 
+                                            state.recentMiners[rm].lastEntropyVersion < state.recentMiners[lowestIx].lastEntropyVersion))
                                             lowestIx = rm;
-                                        }
                                     }
-                                    // Replace that entry with the new higher-stake miner
-                                    if (state.commitments[i].amount > state.recentMiners[lowestIx].deposit ||
-                                        // If equal deposit, prefer newer entropy version
-                                        (state.commitments[i].amount == state.recentMiners[lowestIx].deposit &&
-                                         state.entropyPoolVersion > state.recentMiners[lowestIx].lastEntropyVersion)) 
+                                    if(state.commitments[i].amount > state.recentMiners[lowestIx].deposit ||
+                                       (state.commitments[i].amount == state.recentMiners[lowestIx].deposit &&
+                                        state.entropyPoolVersion > state.recentMiners[lowestIx].lastEntropyVersion)) 
                                     {
                                         state.recentMiners[lowestIx].minerId = invocatorId;
                                         state.recentMiners[lowestIx].deposit = state.commitments[i].amount;
                                         state.recentMiners[lowestIx].lastEntropyVersion = state.entropyPoolVersion;
                                     }
-                                    // Otherwise, do not include: not high enough stake/relevance
                                 }
                             }
 
@@ -291,8 +293,8 @@ public:
             }
         }
 
-        // Always return random bytes
-        generateRandomBytes(output.randomBytes, 32);
+        // Always return random bytes (current pool)
+        generateRandomBytes(output.randomBytes, 32, 0); // 0 = current pool
         output.entropyVersion = state.entropyPoolVersion;
     }
 
@@ -300,6 +302,11 @@ public:
     // BUY ENTROPY / RANDOM BYTES 
     PUBLIC_PROCEDURE(BuyEntropy)
     {
+        if(qpi.numberOfTickTransactions() == -1) {
+            qpi.setMem(&output, 0, sizeof(output));
+            output.success = false;
+            return;
+        }
         const auto& input = qpi.input<BuyEntropy_input>();
         qpi.setMem(&output, 0, sizeof(output));
         output.success = false;
@@ -307,56 +314,39 @@ public:
         auto currentTick = qpi.tick();
         uint64 buyerFee = qpi.invocationReward();
 
-        uint32 validFreshReveals = 0;
-        uint64 usedDeposit = 0;
-        uint64 usedPoolVersion = state.entropyPoolVersion;
-
-        // First: ensure recent entropy exists
-        // Recent = new entropy since last sales/within last X ticks
+        // Find a fresh enough miner with deposit >= minMinerDeposit
+        bool eligible = false;
+        uint64 usedMinerDeposit = 0;
         for(uint32 i=0; i < state.recentMinerCount; ++i) {
-            if(state.recentMiners[i].deposit >= input.minMinerDeposit &&
-               (currentTick - state.lastRevealTick) <= state.revealTimeoutTicks) { // Use revealTimeoutTicks as freshness window
-                ++validFreshReveals;
-                usedDeposit = state.recentMiners[i].deposit; // Could use min/max/average
+            if(state.recentMiners[i].deposit >= input.minMinerDeposit && 
+               (currentTick - state.lastRevealTick) <= state.revealTimeoutTicks) {
+                   eligible = true;
+                   usedMinerDeposit = state.recentMiners[i].deposit;
+                   break;
             }
         }
 
-        if(validFreshReveals < input.minFreshReveals) {
-            // Not enough high-stake entropy — don't sell
+        if(!eligible)
             return;
-        }
 
-		uint64 minPrice = 
-			  state.pricePerByte
-			* input.numberOfBytes
-			* state.priceFreshRevealMul * input.minFreshReveals
-			* (input.minMinerDeposit / state.priceDepositDivisor + 1);
-        if(buyerFee < minPrice) {
-            // Not enough paid
+        // True pricing
+        uint64 minPrice = state.pricePerByte
+                        * input.numberOfBytes
+                        * (input.minMinerDeposit / state.priceDepositDivisor + 1);
+        if(buyerFee < minPrice)
             return;
-        }
 
-        // Return random bytes (secure)
-        generateRandomBytes(output.randomBytes, input.numberOfBytes > 32 ? 32 : input.numberOfBytes);
-        output.entropyVersion = state.entropyPoolVersion;
-        output.actualFreshReveals = validFreshReveals;
-        output.usedMinerDeposit = usedDeposit;
-        output.usedPoolVersion = usedPoolVersion;
+        // Serve — use entropy from 2 ticks ago!
+        uint32 hist_idx = (state.entropyHistoryHead + ENTROPY_HISTORY_LEN - 2) % ENTROPY_HISTORY_LEN;
+        generateRandomBytes(output.randomBytes, input.numberOfBytes > 32 ? 32 : input.numberOfBytes, hist_idx);
+        output.entropyVersion = state.entropyPoolVersionHistory[hist_idx];
+        output.usedMinerDeposit = usedMinerDeposit;
+        output.usedPoolVersion  = state.entropyPoolVersionHistory[hist_idx];
         output.success = true;
 
-        // Split earnings: 50% miners, 50% shareholders (holding in pools until epoch end)
         uint64 half = buyerFee/2;
         state.minerEarningsPool += half;
-        state.shareholderEarningsPool += (buyerFee-half);
-    }
-
-    // --------------------------------------------------
-    // MINER REWARD CLAIM (Optional)
-    PUBLIC_PROCEDURE(ClaimMinerEarnings)
-    {
-        // (For individual, advanced; not needed if you only distribute at epoch end.)
-        output.payout = 0; // All paid out at epoch end in this implementation.
-        // Optionally allow immediate/minimum payout if you want.
+        state.shareholderEarningsPool += (buyerFee - half);
     }
 
     // --------------------------------------------------
@@ -412,15 +402,13 @@ public:
         output.commitmentCount = userCommitmentCount;
     }
 	
-	PUBLIC_FUNCTION(QueryPrice)
-	{
-		const auto& input = qpi.input<QueryPrice_input>();
-		output.price = 
-			state.pricePerByte
-		  * input.numberOfBytes
-		  * state.priceFreshRevealMul * input.minFreshReveals
-		  * (input.minMinerDeposit / state.priceDepositDivisor + 1);
-	}
+    PUBLIC_FUNCTION(QueryPrice)
+    {
+        const auto& input = qpi.input<QueryPrice_input>();
+        output.price = state.pricePerByte
+                    * input.numberOfBytes
+                    * (input.minMinerDeposit / state.priceDepositDivisor + 1);
+    }
 
     // --------------------------------------------------
     // Epoch End: Distribute pools
@@ -463,44 +451,37 @@ public:
 		// USER PROCEDURES 
 		REGISTER_USER_PROCEDURE(RevealAndCommit,       1);
 		REGISTER_USER_PROCEDURE(BuyEntropy,            2);
-		REGISTER_USER_PROCEDURE(ClaimMinerEarnings,    3);
 	}
 
     INITIALIZE()
     {
-        state.contractFeeReserve = 0;
+        state.entropyHistoryHead = 0;
+        for (int i = 0; i < ENTROPY_HISTORY_LEN; ++i) {
+            qpi.setMem(&state.entropyHistory[i], 0, sizeof(m256i));
+            state.entropyPoolVersionHistory[i] = 0;
+        }
         qpi.setMem(&state.currentEntropyPool, 0, sizeof(m256i));
         state.entropyPoolVersion = 0;
         state.totalCommits = 0;
         state.totalReveals = 0;
         state.totalSecurityDepositsLocked = 0;
-        state.minimumSecurityDeposit = 1000; // 1K QU minimum
-        state.revealTimeoutTicks = 9; // 9 ticks timeout by default (can change)
+        state.minimumSecurityDeposit = 1; // Now allow 1 QU
+        state.revealTimeoutTicks = 9;
         state.commitmentCount = 0;
-
-        // Revenue tracking
         state.totalRevenue = 0;
         state.pendingShareholderDistribution = 0;
         state.lostDepositsRevenue = 0;
-
         state.minerEarningsPool = 0;
         state.shareholderEarningsPool = 0;
         state.recentMinerCount = 0;
         state.lastRevealTick = 0;
-		
-		// Pricing (for buyers)
-		state.pricePerByte = 10;
-		state.priceFreshRevealMul = 1;
-		state.priceDepositDivisor = 1000;
-
-        // Initialize valid security deposit amounts (powers of 10) for miners
-        for (int i = 0; i < 16; i++)
-        {
+        state.pricePerByte = 10;
+        state.priceDepositDivisor = 1000;
+        for (int i = 0; i < 16; i++) {
             state.validDepositAmounts[i] = 1ULL;
             for (int j = 0; j < i; j++)
                 state.validDepositAmounts[i] *= 10;
         }
-
         qpi.setMem(state.commitments, 0, sizeof(state.commitments));
         qpi.setMem(state.recentMiners, 0, sizeof(state.recentMiners));
     }
@@ -508,27 +489,26 @@ public:
 private:
     // -- Other helper functions
     
-	void updateEntropyPool(const bit_4096& newEntropy)
+    void updateEntropyPool(const bit_4096& newEntropy)
     {
         // XOR new entropy into the global pool
         for (int i = 0; i < 4; i++)
-        {
             state.currentEntropyPool.m256i_u64[i] ^= newEntropy.data[i];
-        }
+
+        // Update entropy history (circular buffer)
+        state.entropyHistoryHead = (state.entropyHistoryHead + 1) % ENTROPY_HISTORY_LEN;
+        state.entropyHistory[state.entropyHistoryHead] = state.currentEntropyPool;
         state.entropyPoolVersion++;
+        state.entropyPoolVersionHistory[state.entropyHistoryHead] = state.entropyPoolVersion;
     }
 	
-	void generateRandomBytes(uint8* output, uint32 numBytes)
+    void generateRandomBytes(uint8* output, uint32 numBytes, uint32 historyIdx)
     {
-        // Combine current entropy pool with current tick for uniqueness
-        m256i combinedEntropy = state.currentEntropyPool;
+        m256i selectedPool = state.entropyHistory[(state.entropyHistoryHead + ENTROPY_HISTORY_LEN - historyIdx) % ENTROPY_HISTORY_LEN];
         m256i tickEntropy = { qpi.tick(), qpi.tick() >> 32, 0, 0 };
-        combinedEntropy = xorM256i(combinedEntropy, tickEntropy);
-        
-        // Generate hash
+        m256i combinedEntropy;
+        for (int i = 0; i < 4; i++) combinedEntropy.m256i_u64[i] = selectedPool.m256i_u64[i] ^ tickEntropy.m256i_u64[i];
         id finalHash = computeHashFromM256i(combinedEntropy);
-        
-        // Copy requested bytes (max 32)
         qpi.copyMem(output, finalHash.bytes, (numBytes > 32) ? 32 : numBytes);
     }
 	
@@ -557,10 +537,7 @@ private:
 
     bool isValidDepositAmount(uint64 amount)
     {
-        for (int i = 0; i < 16; i++) {
-            if (amount == state.validDepositAmounts[i])
-                return true;
-        }
+        for (int i = 0; i < 16; i++) if (amount == state.validDepositAmounts[i]) return true;
         return false;
     }
 
@@ -578,37 +555,21 @@ private:
         return result;
     }
 
-    m256i xorM256i(const m256i& a, const m256i& b)
-    {
-        m256i result;
-        result.m256i_u64[0] = a.m256i_u64[0] ^ b.m256i_u64[0];
-        result.m256i_u64[1] = a.m256i_u64[1] ^ b.m256i_u64[1];
-        result.m256i_u64[2] = a.m256i_u64[2] ^ b.m256i_u64[2];
-        result.m256i_u64[3] = a.m256i_u64[3] ^ b.m256i_u64[3];
-        return result;
-    }
-
     bool isEqualId(const id& a, const id& b)
     {
-        for (int i = 0; i < 32; i++)
-            if (a.bytes[i] != b.bytes[i])
-                return false;
+        for (int i = 0; i < 32; i++) if (a.bytes[i] != b.bytes[i]) return false;
         return true;
     }
 
     bool isZeroId(const id& value)
     {
-        for (int i = 0; i < 32; i++)
-            if (value.bytes[i] != 0)
-                return false;
+        for (int i = 0; i < 32; i++) if (value.bytes[i] != 0) return false;
         return true;
     }
 
     bool isZeroBits(const bit_4096& value)
     {
-        for (int i = 0; i < 64; i++)
-            if (value.data[i] != 0)
-                return false;
+        for (int i = 0; i < 64; i++) if (value.data[i] != 0) return false;
         return true;
     }
 };
