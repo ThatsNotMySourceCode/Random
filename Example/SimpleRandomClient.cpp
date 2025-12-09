@@ -17,7 +17,7 @@
 #define TX_TYPE_QUERYPRICE 3
 
 #define EXTRA_DATA_SIZE_MINER 544
-#define EXTRA_DATA_SIZE_BUY   16  // Now: 4 bytes numBytes + 8 bytes minMinerDeposit + 4 bytes padding or reserved
+#define EXTRA_DATA_SIZE_BUY   16  // 4 bytes numBytes + 8 bytes minMinerDeposit + 4 bytes padding or reserved
 #define EXTRA_DATA_SIZE_PRICE 12  // 4 bytes numBytes + 8 bytes minMinerDeposit
 #define SEED "yourminerseedhere"
 #define REVEAL_TICKS 9
@@ -86,10 +86,10 @@ std::string bit4096ToHex(const bit_4096& b) {
     return toHex(reinterpret_cast<const uint8*>(&b), sizeof(bit_4096));
 }
 
-// --- Query contract for price (transparency, latest struct) ---
+// --- Query contract for price ---
 uint64 query_price(uint32_t numBytes, uint64 minDeposit) {
     std::ostringstream extra;
-    // Pack QueryPrice_input: 4 bytes numBytes, 8 bytes minDeposit (big-endian assumed for qubic-cli currently, else adapt!)
+    // Pack QueryPrice_input: 4 bytes numBytes (big-endian), 8 bytes minDeposit
     extra << std::hex
           << std::setw(8) << std::setfill('0') << numBytes
           << std::setw(16) << minDeposit;
@@ -136,7 +136,7 @@ void miner_commit(const bit_4096& revealBits, const id& commitDigest, uint64 dep
     else std::cerr << "Commit TX failed\n";
 }
 
-// --- CLI: Buy Entropy (Random Bytes as User, price auto-from SC, latest struct) ---
+// --- CLI: Buy Entropy (Random Bytes as User, price auto-from SC) ---
 void buy_entropy_cli(uint32_t numBytes, uint64 minMinerDeposit) {
     // Query the contract for the correct minimum fee
     uint64 fee = query_price(numBytes, minMinerDeposit);
@@ -167,7 +167,6 @@ void buy_entropy_cli(uint32_t numBytes, uint64 minMinerDeposit) {
 }
 
 void print_my_commitments(const std::string& myHexId) {
-    // Should be a 32-byte hex string (user's id)
     std::ostringstream extra;
     extra << myHexId;
     std::ostringstream cmd;
@@ -175,7 +174,7 @@ void print_my_commitments(const std::string& myHexId) {
         << " -nodeip " << NODE_IP
         << " -nodeport " << NODE_PORT
         << " -sendcustomfunction " << SC_ID
-        << " 2 32 " // 2 = GetUserCommitments, 32 bytes input (id)
+        << " 2 32 "
         << extra.str();
     FILE* pipe = popen(cmd.str().c_str(), "r");
     if (!pipe) return;
