@@ -152,21 +152,21 @@ void demonstrateThreeFlows() {
     miner_commit(entropyC, zeroCommit, 0);
 }
 
-// Query the contract for price directly!
-uint64 query_price(uint32_t numBytes, uint32_t minFresh, uint64 minDeposit);
+// Query the contract for price directly! (only numberOfBytes and minMinerDeposit now)
+uint64 query_price(uint32_t numBytes, uint64 minDeposit);
 
 void demonstrateBuyEntropyOnce() {
     std::cout << "\n=== Buy Entropy as a Customer ===" << std::endl;
-    // Buy 32 random bytes, minimum 3 fresh reveals, min deposit 100K QU, get correct fee from contract!
-    uint32_t wants = 32, minFresh = 3;
+    // Buy 32 random bytes, min deposit 100K QU, get correct fee from contract!
+    uint32_t wants = 32;
     uint64 minDep = 100000;
-    uint64 fee = query_price(wants, minFresh, minDep);
+    uint64 fee = query_price(wants, minDep);
     if(!fee) {
         std::cerr << "Failed to get fee quote from contract - skipping buy call." << std::endl;
         return;
     }
     std::cout << "[Demo] Fee required for buy call: " << fee << std::endl;
-    buy_entropy_cli(wants, minFresh, minDep); // Pricing is internal, keeps things DRY & bugfree!
+    buy_entropy_cli(wants, minDep);
 }
 
 int main() {
