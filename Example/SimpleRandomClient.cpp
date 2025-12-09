@@ -167,6 +167,28 @@ void buy_entropy_cli(uint32_t numBytes, uint32_t minFreshReveals, uint64 minMine
     else std::cerr << "BuyEntropy TX failed\n";
 }
 
+void print_my_commitments(const std::string& myHexId) {
+    // Build the hex for the request input...
+    // (Assume SimpleRandomClient_cli.cpp has utilities to hexify id etc.)
+    std::ostringstream extra;
+    extra << myHexId; // Should be a 32-byte hex string (user's id)
+    
+    std::ostringstream cmd;
+    cmd << "./qubic-cli"
+        << " -nodeip " << NODE_IP
+        << " -nodeport " << NODE_PORT
+        << " -sendcustomfunction " << SC_ID
+        << " 2 32 " // Assume 2 = GetUserCommitments, 32 as input size (id)
+        << extra.str();
+    FILE* pipe = popen(cmd.str().c_str(), "r");
+    if (!pipe) return;
+    char buffer[128];
+    std::string output;
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) output += buffer;
+    pclose(pipe);
+    std::cout << "My commitments:\n" << output << std::endl;
+}
+
 void wait_for_tick(int targetTick) {
     int cur = get_current_tick();
     while (cur < targetTick) {
