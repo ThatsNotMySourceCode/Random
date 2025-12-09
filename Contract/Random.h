@@ -44,10 +44,9 @@ struct RANDOM_CONTRACT_STATE
         id minerId;
         uint64 deposit;
         uint64 lastEntropyVersion;
+        uint32 lastRevealTick; // NEW: per-miner freshness
     } recentMiners[MAX_RECENT_MINERS];
     uint32 recentMinerCount;
-
-    uint64 lastRevealTick;
 
     // Valid deposit amounts (powers of 10)
     uint64 validDepositAmounts[16];
@@ -145,7 +144,7 @@ public:
         uint64 payout;
     };
 	
-	// --------------------------------------------------
+    // --------------------------------------------------
     // PRICE QUERY
     struct QueryPrice_input {
         uint32 numberOfBytes;
@@ -159,22 +158,24 @@ public:
     // Mining: RevealAndCommit 
     PUBLIC_PROCEDURE(RevealAndCommit)
     {
-		processTimeouts();
-			
+        processTimeouts();
         // Empty tick handling:
         if(qpi.numberOfTickTransactions() == -1) {
-            // Tick is empty: refund all pending commitments whose deadline is now
-            for(uint32 i = 0; i < state.commitmentCount; i++)
-            {
+            for(uint32 i = 0; i < state.commitmentCount; ) {
                 if(!state.commitments[i].hasRevealed &&
                    state.commitments[i].revealDeadlineTick == qpi.tick())
                 {
                     qpi.transfer(state.commitments[i].invocatorId, state.commitments[i].amount);
-                    state.commitments[i].hasRevealed = true;
                     state.totalSecurityDepositsLocked -= state.commitments[i].amount;
+                    // Remove this slot by moving last in
+                    if (i != state.commitmentCount - 1)
+                        state.commitments[i] = state.commitments[state.commitmentCount - 1];
+                    state.commitmentCount--;
+                    // Do not increment i, so the moved entry is checked next
+                } else {
+                    i++;
                 }
             }
-            // Return blank output (all refunds handled above)
             qpi.setMem(&output, 0, sizeof(output));
             return;
         }
@@ -183,7 +184,6 @@ public:
         auto invocatorId = qpi.invocator();
         auto invocatorAmount = qpi.invocationReward();
         auto currentTick = qpi.tick();
-
         qpi.setMem(&output, 0, sizeof(output));
 
         bool hasRevealData = !isZeroBits(input.revealedBits);
@@ -193,8 +193,7 @@ public:
         // Step 1: Process reveal if provided
         if (hasRevealData)
         {
-            for (uint32 i = 0; i < state.commitmentCount; i++)
-            {
+            for (uint32 i = 0; i < state.commitmentCount; ) {
                 if (!state.commitments[i].hasRevealed && 
                     isEqualId(state.commitments[i].invocatorId, invocatorId))
                 {
@@ -207,7 +206,6 @@ public:
                             state.lostDepositsRevenue += lostDeposit;
                             state.totalRevenue += lostDeposit;
                             state.pendingShareholderDistribution += lostDeposit;
-
                             output.revealSuccessful = false;
                         }
                         else
@@ -221,8 +219,7 @@ public:
 
                             state.totalReveals++;
                             state.totalSecurityDepositsLocked -= state.commitments[i].amount;
-
-                            // Update RecentMiners
+                            // Update RecentMiners (with per-miner freshness)
                             int32 existingIndex = -1;
                             for(uint32 rm = 0; rm < state.recentMinerCount; ++rm) {
                                 if(isEqualId(state.recentMiners[rm].minerId, invocatorId)) {
@@ -235,16 +232,18 @@ public:
                                     state.recentMiners[existingIndex].deposit = state.commitments[i].amount;
                                     state.recentMiners[existingIndex].lastEntropyVersion = state.entropyPoolVersion;
                                 }
+                                state.recentMiners[existingIndex].lastRevealTick = currentTick;
                             }
                             else {
                                 if(state.recentMinerCount < MAX_RECENT_MINERS) {
                                     state.recentMiners[state.recentMinerCount].minerId = invocatorId;
                                     state.recentMiners[state.recentMinerCount].deposit = state.commitments[i].amount;
                                     state.recentMiners[state.recentMinerCount].lastEntropyVersion = state.entropyPoolVersion;
+                                    state.recentMiners[state.recentMinerCount].lastRevealTick = currentTick;
                                     state.recentMinerCount++;
                                 }
                                 else {
-                                    // Overflow: evict lowest-stake or least-recent miner
+                                    // Overflow: evict
                                     uint32 lowestIx = 0;
                                     for(uint32 rm = 1; rm < MAX_RECENT_MINERS; ++rm) {
                                         if(state.recentMiners[rm].deposit < state.recentMiners[lowestIx].deposit ||
@@ -259,16 +258,21 @@ public:
                                         state.recentMiners[lowestIx].minerId = invocatorId;
                                         state.recentMiners[lowestIx].deposit = state.commitments[i].amount;
                                         state.recentMiners[lowestIx].lastEntropyVersion = state.entropyPoolVersion;
+                                        state.recentMiners[lowestIx].lastRevealTick = currentTick;
                                     }
                                 }
                             }
-
-                            state.lastRevealTick = currentTick;
                         }
-                        state.commitments[i].hasRevealed = true;
-                        break;
+                        // Compaction after reveal
+                        state.totalSecurityDepositsLocked -= state.commitments[i].amount;
+                        if (i != state.commitmentCount - 1)
+                            state.commitments[i] = state.commitments[state.commitmentCount - 1];
+                        state.commitmentCount--;
+                        // do not increment i so new moved slot is checked
+                        continue;
                     }
                 }
+                i++;
             }
         }
 
@@ -285,11 +289,9 @@ public:
                     state.commitments[state.commitmentCount].commitTick = currentTick;
                     state.commitments[state.commitmentCount].revealDeadlineTick = currentTick + state.revealTimeoutTicks;
                     state.commitments[state.commitmentCount].hasRevealed = false;
-
                     state.commitmentCount++;
                     state.totalCommits++;
                     state.totalSecurityDepositsLocked += invocatorAmount;
-
                     output.commitSuccessful = true;
                 }
             }
@@ -304,8 +306,7 @@ public:
     // BUY ENTROPY / RANDOM BYTES 
     PUBLIC_PROCEDURE(BuyEntropy)
     {
-		processTimeouts();
-			
+        processTimeouts();
         if(qpi.numberOfTickTransactions() == -1) {
             qpi.setMem(&output, 0, sizeof(output));
             output.success = false;
@@ -314,40 +315,36 @@ public:
         const auto& input = qpi.input<BuyEntropy_input>();
         qpi.setMem(&output, 0, sizeof(output));
         output.success = false;
-
         auto currentTick = qpi.tick();
         uint64 buyerFee = qpi.invocationReward();
 
-        // Find a fresh enough miner with deposit >= minMinerDeposit
+        // Per-miner freshness improvement!
         bool eligible = false;
         uint64 usedMinerDeposit = 0;
         for(uint32 i=0; i < state.recentMinerCount; ++i) {
             if(state.recentMiners[i].deposit >= input.minMinerDeposit && 
-               (currentTick - state.lastRevealTick) <= state.revealTimeoutTicks) {
-                   eligible = true;
-                   usedMinerDeposit = state.recentMiners[i].deposit;
-                   break;
+               (currentTick - state.recentMiners[i].lastRevealTick) <= state.revealTimeoutTicks) {
+                eligible = true;
+                usedMinerDeposit = state.recentMiners[i].deposit;
+                break;
             }
         }
 
         if(!eligible)
             return;
 
-        // True pricing
         uint64 minPrice = state.pricePerByte
                         * input.numberOfBytes
                         * (input.minMinerDeposit / state.priceDepositDivisor + 1);
         if(buyerFee < minPrice)
             return;
 
-        // Serve — use entropy from 2 ticks ago!
         uint32 hist_idx = (state.entropyHistoryHead + ENTROPY_HISTORY_LEN - 2) % ENTROPY_HISTORY_LEN;
         generateRandomBytes(output.randomBytes, input.numberOfBytes > 32 ? 32 : input.numberOfBytes, hist_idx);
         output.entropyVersion = state.entropyPoolVersionHistory[hist_idx];
         output.usedMinerDeposit = usedMinerDeposit;
         output.usedPoolVersion  = state.entropyPoolVersionHistory[hist_idx];
         output.success = true;
-
         uint64 half = buyerFee/2;
         state.minerEarningsPool += half;
         state.shareholderEarningsPool += (buyerFee - half);
@@ -518,25 +515,24 @@ private:
         qpi.copyMem(output, finalHash.bytes, (numBytes > 32) ? 32 : numBytes);
     }
 	
-	void processTimeouts()
-    {
-        // Check for failed reveals and process lost deposits
+    void processTimeouts() {
         uint32 currentTick = qpi.tick();
-        
-        for (uint32 i = 0; i < state.commitmentCount; i++)
-        {
-            if (!state.commitments[i].hasRevealed && 
+        for (uint32 i = 0; i < state.commitmentCount; ) {
+            if (!state.commitments[i].hasRevealed &&
                 currentTick > state.commitments[i].revealDeadlineTick)
             {
-                // This commit has timed out - deposit goes to shareholders
                 uint64 lostDeposit = state.commitments[i].amount;
                 state.lostDepositsRevenue += lostDeposit;
                 state.totalRevenue += lostDeposit;
                 state.pendingShareholderDistribution += lostDeposit;
-                
-                // Mark as processed
-                state.commitments[i].hasRevealed = true;
                 state.totalSecurityDepositsLocked -= lostDeposit;
+                // Remove slot
+                if (i != state.commitmentCount - 1)
+                    state.commitments[i] = state.commitments[state.commitmentCount - 1];
+                state.commitmentCount--;
+                // Do not increment i, next moved slot is checked
+            } else {
+                i++;
             }
         }
     }
@@ -579,4 +575,5 @@ private:
         return true;
     }
 };
+
 
