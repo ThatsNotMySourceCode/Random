@@ -135,3 +135,18 @@ buy_entropy_cli(numberOfBytes, minMinerDeposit, fee);
 ## Qubic Random SC
 
 You now have a secure, transparent, and incentive-aligned decentralized randomness engine with built-in market and fee revenue. For full code, see `Random.h`, `SimpleRandomClient_cli.cpp`, and demos.
+
+
+## Contract configuration variables
+
+- **minimumSecurityDeposit** (uint64):
+The minimum allowed deposit for entropy miners. Must be at least 1 QU, and only powers of ten (1, 10, 100, 1000, ...) are valid. Miners can choose any allowed deposit amount as their security level.
+- **revealTimeoutTicks** (uint32):
+Number of ticks a miner has to reveal their previously committed entropy after committing. Default is 9. If a reveal is not submitted on time, the deposit is forfeited (unless the tick is empty, in which case it is refunded).
+- **pricePerByte** (uint64):
+The base fee (in QU) charged per random byte for the BuyEntropy procedure. Default is 10 QU per byte.
+- **priceDepositDivisor** (uint64):
+Used to scale BuyEntropy price based on the minimum miner deposit required by the buyer. The effective price =
+`pricePerByte * numberOfBytes * (minMinerDeposit / priceDepositDivisor + 1)`
+- **validDepositAmounts[16]** (uint64[]):
+List of all allowed deposit amounts (powers of ten), used to validate miner deposits and enforce the security level spectrum.
