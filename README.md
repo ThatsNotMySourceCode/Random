@@ -115,7 +115,8 @@ buy_entropy_cli(numberOfBytes, minMinerDeposit, fee);
 ## Smart Contract API
 
 - `RevealAndCommit`: For miners to commit/reveal entropy. Requires deposit.
-- `BuyEntropy`: For anyone to purchase random bytes with on-chain proof of deposit level. Requires on-chain price (use `QueryPrice` before sending).
+- `BuyEntropy`: For anyone to purchase random bytes. Requires on-chain price (use `QueryPrice` before sending).
+    - Random bytes are only provided if the contract can prove - using immutable, on-chain miner deposit records - that at least one sufficient deposit was revealed recently.
 - `QueryPrice`: Public function returning the exact fee for any BuyEntropy request.
 - `GetContractInfo`, `GetUserCommitments`: Read-only status/info functions for UIs/wallets/bots.
 
