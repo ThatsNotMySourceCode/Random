@@ -265,3 +265,200 @@ TEST(ContractRandom, EndEpochDistribution)
     EXPECT_EQ(random.getState()->shareholderEarningsPool, 0);
     EXPECT_EQ(random.getState()->recentMinerCount, 0);
 }
+
+TEST(ContractRandom, RecentMinerEvictionPolicy)
+{
+    ContractTestingRandom random;
+    const int maxMiners = random.getState()->MAX_RECENT_MINERS;
+    std::vector<id> miners;
+    auto baseDeposit = 1000;
+
+    // Fill up to MAX_RECENT_MINERS, all with same deposit
+    for (int i = 0; i < maxMiners; ++i) {
+        auto miner = ContractTestingRandom::testId(5000 + i);
+        miners.push_back(miner);
+        random.commit(miner, random.testBits(7000 + i), baseDeposit);
+        random.revealAndCommit(miner, random.testBits(7000 + i), random.testBits(8000 + i), baseDeposit);
+    }
+    EXPECT_EQ(random.getState()->recentMinerCount, maxMiners);
+
+    // Add new miner with higher deposit, should evict one of the previous (lowest deposit)
+    id highMiner = ContractTestingRandom::testId(99999);
+    random.commit(highMiner, random.testBits(55555), baseDeposit * 10);
+    random.revealAndCommit(highMiner, random.testBits(55555), random.testBits(55566), baseDeposit * 10);
+
+    EXPECT_EQ(random.getState()->recentMinerCount, maxMiners);
+
+    // All lower deposit miners except one likely evicted, highMiner should be present with max deposit
+    int foundHigh = 0;
+    for (uint32_t i = 0; i < maxMiners; ++i) {
+        if (random.getState()->recentMiners[i].deposit == baseDeposit * 10)
+            foundHigh++;
+    }
+    EXPECT_EQ(foundHigh, 1);
+}
+
+TEST(ContractRandom, BuyerPickinessHighRequirement)
+{
+    ContractTestingRandom random;
+    id miner = random.testId(721);
+    id buyer = random.testId(722);
+    uint64_t lowDeposit = 1000, highDeposit = 100000;
+
+    random.commit(miner, random.testBits(100), lowDeposit);
+    random.revealAndCommit(miner, random.testBits(100), random.testBits(101), lowDeposit);
+
+    // As buyer, require higher min deposit than any available miner supplied
+    EXPECT_FALSE(random.buyEntropy(buyer, 8, highDeposit, 10000, false));
+}
+
+TEST(ContractRandom, MixedDepositLevels)
+{
+    ContractTestingRandom random;
+    id lowMiner = random.testId(1001);
+    id highMiner = random.testId(1002);
+    id buyer = random.testId(1003);
+
+    random.commit(lowMiner, random.testBits(88), 1000);
+    random.commit(highMiner, random.testBits(89), 100000);
+    random.revealAndCommit(lowMiner, random.testBits(88), random.testBits(188), 1000);
+    random.revealAndCommit(highMiner, random.testBits(89), random.testBits(189), 100000);
+
+    EXPECT_TRUE(random.buyEntropy(buyer, 8, 1000, 10000, true));
+    EXPECT_TRUE(random.buyEntropy(buyer, 8, 100000, 100000, true));
+    EXPECT_FALSE(random.buyEntropy(buyer, 8, 100001, 100000, false));
+}
+
+TEST(ContractRandom, EmptyTickRefund_MultiMiners)
+{
+    ContractTestingRandom random;
+    id m1 = random.testId(931);
+    id m2 = random.testId(932);
+    random.commit(m1, random.testBits(401), 5000);
+    random.commit(m2, random.testBits(402), 7000);
+
+    int tick = getTick() + random.getState()->revealTimeoutTicks;
+    setTick(tick);
+    setTickIsEmpty(true);
+
+    RANDOM::RevealAndCommit_input dummy = {};
+    random.setActiveUser(m1);
+    invokeUserProcedure(RANDOM_CONTRACT_INDEX, 1, dummy, RANDOM::RevealAndCommit_output{}, m1, 0);
+    EXPECT_EQ(random.getState()->commitmentCount, 0);
+    // test both miners' balances for refund if desired
+}
+
+TEST(ContractRandom, Timeout_MultiMiners)
+{
+    ContractTestingRandom random;
+    id m1 = random.testId(7777);
+    id m2 = random.testId(8888);
+    random.commit(m1, random.testBits(111), 2000);
+    random.commit(m2, random.testBits(112), 4000);
+    int afterTimeout = getTick() + random.getState()->revealTimeoutTicks + 1;
+    setTick(afterTimeout);
+
+    RANDOM::RevealAndCommit_input dummy = {};
+    random.setActiveUser(m2);
+    invokeUserProcedure(RANDOM_CONTRACT_INDEX, 1, dummy, RANDOM::RevealAndCommit_output{}, m2, 0);
+
+    EXPECT_EQ(random.getState()->commitmentCount, 0);
+    EXPECT_EQ(random.getState()->lostDepositsRevenue, 6000);
+}
+
+TEST(ContractRandom, MultipleBuyersEpochReset)
+{
+    ContractTestingRandom random;
+    id miner = random.testId(1201);
+    id buyer1 = random.testId(1301);
+    id buyer2 = random.testId(1401);
+
+    random.commit(miner, random.testBits(900), 8000);
+    random.revealAndCommit(miner, random.testBits(900), random.testBits(901), 8000);
+
+    EXPECT_TRUE(random.buyEntropy(buyer1, 8, 8000, 20000, true));
+    EXPECT_TRUE(random.buyEntropy(buyer2, 16, 8000, 50000, true));
+
+    callSystemProcedure(RANDOM_CONTRACT_INDEX, END_EPOCH);
+
+    EXPECT_EQ(random.getState()->minerEarningsPool, 0);
+    EXPECT_EQ(random.getState()->shareholderEarningsPool, 0);
+    EXPECT_EQ(random.getState()->recentMinerCount, 0);
+}
+
+TEST(ContractRandom, QueryUserCommitmentsInfo)
+{
+    ContractTestingRandom random;
+    id miner = random.testId(2001);
+
+    random.commit(miner, random.testBits(1234), 10000);
+
+    // Call GetUserCommitments for miner
+    RANDOM::GetUserCommitments_input inp{};
+    inp.userId = miner;
+    RANDOM::GetUserCommitments_output out{};
+    callFunction(RANDOM_CONTRACT_INDEX, 2, inp, out);
+    EXPECT_GE(out.commitmentCount, 1);
+
+    // Call GetContractInfo for global stats
+    RANDOM::GetContractInfo_input ci{};
+    RANDOM::GetContractInfo_output co{};
+    callFunction(RANDOM_CONTRACT_INDEX, 1, ci, co);
+    EXPECT_GE(co.totalCommits, 1);
+}
+
+TEST(ContractRandom, RejectInvalidDeposits)
+{
+    ContractTestingRandom random;
+    id miner = random.testId(2012);
+
+    // Try to commit invalid deposit (not a power of ten)
+    setActiveUser(miner);
+    RANDOM::RevealAndCommit_input inp{};
+    inp.committedDigest = RANDOM().computeHash(random.testBits(66));
+    setBalance(miner, getBalance(miner) + 7777);
+    RANDOM::RevealAndCommit_output out{};
+    // Use 7777 which is not a power of ten, should not register a commitment
+    invokeUserProcedure(RANDOM_CONTRACT_INDEX, 1, inp, out, miner, 7777);
+
+    EXPECT_EQ(random.getState()->commitmentCount, 0);
+}
+
+TEST(ContractRandom, BuyEntropyEdgeNumBytes)
+{
+    ContractTestingRandom random;
+    id miner = random.testId(3031);
+    id buyer = random.testId(3032);
+
+    random.commit(miner, random.testBits(8888), 8000);
+    random.revealAndCommit(miner, random.testBits(8888), random.testBits(8899), 8000);
+
+    // 1 byte (minimum)
+    EXPECT_TRUE(random.buyEntropy(buyer, 1, 8000, 10000, true));
+    // 32 bytes (maximum)
+    EXPECT_TRUE(random.buyEntropy(buyer, 32, 8000, 40000, true));
+    // 33 bytes (over contract max, should clamp or fail)
+    EXPECT_FALSE(random.buyEntropy(buyer, 33, 8000, 50000, false));
+}
+
+TEST(ContractRandom, OutOfOrderRevealAndCompaction)
+{
+    ContractTestingRandom random;
+    std::vector<id> miners;
+    for (int i = 0; i < 8; ++i) {
+        miners.push_back(random.testId(5400 + i));
+        random.commit(miners.back(), random.testBits(8500 + i), 6000);
+    }
+    // Reveal/stop in random order
+    random.revealAndCommit(miners[3], random.testBits(8500 + 3), random.testBits(9500 + 3), 6000);
+    random.revealAndCommit(miners[1], random.testBits(8500 + 1), random.testBits(9500 + 1), 6000);
+    random.stopMining(miners[3], random.testBits(9500 + 3));
+    random.stopMining(miners[1], random.testBits(9500 + 1));
+    // Now reveal/stop remainder
+    for (int i = 0; i < 8; ++i) {
+        if (i == 1 || i == 3) continue;
+        random.revealAndCommit(miners[i], random.testBits(8500 + i), random.testBits(9500 + i), 6000);
+        random.stopMining(miners[i], random.testBits(9500 + i));
+    }
+    EXPECT_EQ(random.getState()->commitmentCount, 0);
+}
