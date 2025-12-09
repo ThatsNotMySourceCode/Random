@@ -17,8 +17,8 @@
 #define TX_TYPE_QUERYPRICE 3
 
 #define EXTRA_DATA_SIZE_MINER 544
-#define EXTRA_DATA_SIZE_BUY   32
-#define EXTRA_DATA_SIZE_PRICE 16
+#define EXTRA_DATA_SIZE_BUY   16  // Now: 4 bytes numBytes + 8 bytes minMinerDeposit + 4 bytes padding or reserved
+#define EXTRA_DATA_SIZE_PRICE 12  // 4 bytes numBytes + 8 bytes minMinerDeposit
 #define SEED "yourminerseedhere"
 #define REVEAL_TICKS 9
 
@@ -35,6 +35,7 @@ struct id {
     id() { std::memset(bytes, 0, 32); }
 };
 
+// Generate 4096 bits from rdseed
 bit_4096 generateEntropy() {
     bit_4096 entropy;
     for (int i = 0; i < 64; ++i) {
@@ -45,7 +46,7 @@ bit_4096 generateEntropy() {
         }
         if (!success) {
             std::cerr << "RDSEED failure after 10 tries\n";
-            val = std::chrono::high_resolution_clock::now().time_since_epoch().count(); // fallback (NOT SAFE)
+            val = std::chrono::high_resolution_clock::now().time_since_epoch().count();
         }
         entropy.data[i] = val;
     }
@@ -85,13 +86,12 @@ std::string bit4096ToHex(const bit_4096& b) {
     return toHex(reinterpret_cast<const uint8*>(&b), sizeof(bit_4096));
 }
 
-// --- Query contract for price (transparency!) ---
-uint64 query_price(uint32_t numBytes, uint32_t minFresh, uint64 minDeposit) {
+// --- Query contract for price (transparency, latest struct) ---
+uint64 query_price(uint32_t numBytes, uint64 minDeposit) {
     std::ostringstream extra;
-    // Pack QueryPrice_input: 4 bytes numBytes, 4 bytes minFresh, 8 bytes minDeposit (little-endian)
+    // Pack QueryPrice_input: 4 bytes numBytes, 8 bytes minDeposit (big-endian assumed for qubic-cli currently, else adapt!)
     extra << std::hex
           << std::setw(8) << std::setfill('0') << numBytes
-          << std::setw(8) << minFresh
           << std::setw(16) << minDeposit;
 
     std::ostringstream cmd;
@@ -136,10 +136,10 @@ void miner_commit(const bit_4096& revealBits, const id& commitDigest, uint64 dep
     else std::cerr << "Commit TX failed\n";
 }
 
-// --- CLI: Buy Entropy (Random Bytes as User, price auto-from SC) ---
-void buy_entropy_cli(uint32_t numBytes, uint32_t minFreshReveals, uint64 minMinerDeposit) {
+// --- CLI: Buy Entropy (Random Bytes as User, price auto-from SC, latest struct) ---
+void buy_entropy_cli(uint32_t numBytes, uint64 minMinerDeposit) {
     // Query the contract for the correct minimum fee
-    uint64 fee = query_price(numBytes, minFreshReveals, minMinerDeposit);
+    uint64 fee = query_price(numBytes, minMinerDeposit);
     if (!fee) {
         std::cerr << "Could not get price from contract--aborting buy tx!" << std::endl;
         return;
@@ -149,9 +149,8 @@ void buy_entropy_cli(uint32_t numBytes, uint32_t minFreshReveals, uint64 minMine
     std::ostringstream extra;
     extra << std::hex
           << std::setw(8) << std::setfill('0') << numBytes
-          << std::setw(8) << minFreshReveals
           << std::setw(16) << minMinerDeposit
-          << std::string((EXTRA_DATA_SIZE_BUY-4-4-8)*2, '0'); // Pad to 32 bytes
+          << std::string((EXTRA_DATA_SIZE_BUY-4-8)*2, '0'); // Pad to 16 bytes
 
     std::ostringstream cmd;
     cmd << "./qubic-cli"
@@ -168,17 +167,15 @@ void buy_entropy_cli(uint32_t numBytes, uint32_t minFreshReveals, uint64 minMine
 }
 
 void print_my_commitments(const std::string& myHexId) {
-    // Build the hex for the request input...
-    // (Assume SimpleRandomClient_cli.cpp has utilities to hexify id etc.)
+    // Should be a 32-byte hex string (user's id)
     std::ostringstream extra;
-    extra << myHexId; // Should be a 32-byte hex string (user's id)
-    
+    extra << myHexId;
     std::ostringstream cmd;
     cmd << "./qubic-cli"
         << " -nodeip " << NODE_IP
         << " -nodeport " << NODE_PORT
         << " -sendcustomfunction " << SC_ID
-        << " 2 32 " // Assume 2 = GetUserCommitments, 32 as input size (id)
+        << " 2 32 " // 2 = GetUserCommitments, 32 bytes input (id)
         << extra.str();
     FILE* pipe = popen(cmd.str().c_str(), "r");
     if (!pipe) return;
@@ -199,7 +196,6 @@ void wait_for_tick(int targetTick) {
 }
 
 int main() {
-    // Mining example (rolling)
     uint64 deposit = 100000; // 100K QU
     int cycle = 0;
 
@@ -209,7 +205,6 @@ int main() {
         id nextDigest = hashEntropy(commitEntropy);
         bit_4096 zeroReveal = {};
         miner_commit(zeroReveal, nextDigest, deposit);
-        // Get commit tick to schedule reveal
         int commitTick = get_current_tick();
         int revealTick = commitTick + REVEAL_TICKS;
         std::cout << "Committed at tick: " << commitTick << ", will reveal at tick: " << revealTick << std::endl;
@@ -223,9 +218,9 @@ int main() {
 
         // --- (Buy demo: request secure randomness occasionally) ---
         if (cycle % 5 == 0) {
-            uint32_t wants = 32, minFresh = 3;
+            uint32_t wants = 32;
             uint64 minDep = 100000;
-            buy_entropy_cli(wants, minFresh, minDep);
+            buy_entropy_cli(wants, minDep);
         }
     }
     return 0;
