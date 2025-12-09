@@ -12,7 +12,7 @@ Supports both **entropy mining** (commit–reveal protocol) and **secure BuyEntr
 
 - Call `RevealAndCommit()` to participate.
     - On your first call, send `committedDigest` with a hash of your random bits, plus a `deposit` as `amount`, and set `revealedBits` to zeros.
-    - On the next call, send your previous entropy as `revealedBits` (to reveal and reclaim your deposit), and simultaneously commit to new entropy (hash as `committedDigest`). Repeat.
+    - On the next call, send your previous entropy as `revealedBits` (to reveal and reclaim your deposit), and simultaneously commit to new entropy (hash as `committedDigest`). Repeat this cycle.
     - To stop mining, just reveal with `committedDigest` as zeros and deposit `0`.
 
 C++ sample for entropy:
@@ -30,29 +30,32 @@ struct RevealAndCommit_input {
 };
 ```
 
-- **Reveal must happen within 9 ticks** (configurable). Late = lose deposit.
-- **Deposit is chosen by miner** (minimum: 1k QU), higher deposit increases miner's ranking and reward share.
+- **Reveal must happen within 9 ticks** (configurable). Late = lose deposit (unless the tick is empty; then your deposit is refunded).
+- **Deposit is chosen by miner** (minimum: 1 QU, then 10, 100, etc). Higher deposit increases miner's ranking and reward share.
 
 ---
 
 ### Entropy Buyers / Random Consumers
 
-- Anyone can call `BuyEntropy` to buy random bytes from the current pool.
+- Anyone can call `BuyEntropy` to buy random bytes from the pool.
     - Parameters let you specify your security level:
         - `numberOfBytes` (1–32)
-        - `minFreshReveals`: Require this many fresh (recent) entropy miner reveals
-        - `minMinerDeposit`: Require each contributing miner to have at least this deposit
-    - Contract **returns a minimum fee requirement** (use `QueryPrice`) so you always know what to pay!
+        - `minMinerDeposit`: Require each contributing miner to have at least this deposit (set by the buyer for desired security).
+    - Contract **returns a minimum fee requirement** (use `QueryPrice`) so you always know exactly what to pay!
 
-- Revenue:
-    - 50% of all `BuyEntropy` payment goes to recent miners (based on pool used for buyer’s request)
+- **Fairness and Security**:
+    - Random bytes are always generated using the entropy pool as it existed **2 ticks ago** (ensures unpredictability even by the current tick leader).
+    - If there was no eligible miner with sufficient deposit in recent history, the sale fails (no bytes sold, no fee taken).
+
+- **Revenue:**
+    - 50% of all `BuyEntropy` payment goes to recent miners (based on the pool used for buyer’s request)
     - 50% goes to Qubic shareholders
-    - Lost security deposits (from missed or late reveals) go 100% to Qubic shareholders.
+    - **Lost security deposits** (from missed or late reveals, except empty tick) go 100% to Qubic shareholders.
 
 **Querying price on-chain (C++/CLI):**
 ```cpp
-uint64_t fee = query_price(numberOfBytes, minFreshReveals, minMinerDeposit);
-// Then call buy_entropy_cli(numBytes, minFreshReveals, minMinerDeposit)
+uint64_t fee = query_price(numberOfBytes, minMinerDeposit);
+// Then call buy_entropy_cli(numberOfBytes, minMinerDeposit)
 ```
 
 ---
@@ -60,21 +63,24 @@ uint64_t fee = query_price(numberOfBytes, minFreshReveals, minMinerDeposit);
 ### Security & Economic Features
 
 - **Economic Security:**
-    - Miners must risk real deposits (1K QU+), with a strict 9-tick reveal deadline
-    - Lost deposits and revenue are distributed fairly
+    - Miners must risk a security deposit (minimum: 1 QU, then 10, 100, 1000, ...). Any power-of-ten value is valid
+    - Strict 9-tick reveal deadline: fail to reveal in time and your deposit is lost (unless the tick is empty; then it is refunded).
+    - Lost deposits go to Qubic holders if miner fails to reveal (unless the tick is empty—then deposits are refunded)
+    - All revenue is split fairly and transparently
 
 - **Cryptographic Security:**
     - Commit–reveal, no front-running or grinding
     - True hardware entropy (`_rdseed64_step()`)
     - Global entropy pool: all miner inputs are XOR’d
+    - All entropy sales use the pool "as of two ticks ago" for front-running resistance
 
 - **No Attack Vectors:**
-    - Buyers can't skip miner participation: randomness is only sold if enough honest, high-deposit miners participated recently
-    - All randomness generation is public and fair
+    - Buyers can't skip security: randomness is only sold if a qualifying honest, high-deposit miner participated recently
+    - Fully public and fair randomness generation
 
 - **Decentralized Market:**
     - Any number of miners can participate
-    - Anyone can buy secure random bytes, with transparent, on-chain configurable pricing
+    - Anyone can buy secure random bytes, with transparent, on-chain pricing
     - Three parallel flows recommended to maximize system entropy
 
 - **Economic Incentives:**
@@ -99,9 +105,9 @@ RevealAndCommit(E2, zero, 0)
 ```
 
 **Buy entropy (as a user):**
-```
-fee = QueryPrice(numBytes, minFreshReveals, minMinerDeposit)
-BuyEntropy(numBytes, minFreshReveals, minMinerDeposit, fee)
+```cpp
+uint64_t fee = query_price(numberOfBytes, minMinerDeposit);
+buy_entropy_cli(numberOfBytes, minMinerDeposit, fee);
 ```
 
 ---
@@ -109,7 +115,7 @@ BuyEntropy(numBytes, minFreshReveals, minMinerDeposit, fee)
 ## Smart Contract API
 
 - `RevealAndCommit`: For miners to commit/reveal entropy. Requires deposit.
-- `BuyEntropy`: For anyone to purchase random bytes with on-chain proof of freshness/security. Requires on-chain price (use `QueryPrice` before sending).
+- `BuyEntropy`: For anyone to purchase random bytes with on-chain proof of deposit level. Requires on-chain price (use `QueryPrice` before sending).
 - `QueryPrice`: Public function returning the exact fee for any BuyEntropy request.
 - `GetContractInfo`, `GetUserCommitments`: Read-only status/info functions for UIs/wallets/bots.
 
@@ -117,7 +123,7 @@ BuyEntropy(numBytes, minFreshReveals, minMinerDeposit, fee)
 
 #### All flows are cryptographically sound, economically secure, and truly decentralized!
 
-- **Unpredictability:** Random bytes depend on unrevealed future entropy.
+- **Unpredictability:** Random bytes depend on unrevealed future entropy and are based on the pool as of two ticks ago.
 - **Fairness:** Honest participants always get fair access and payment.
 - **Transparency:** All pricing formulas and contract parameters are publicly queryable.
 - **Sustainability:** Economic model rewards both honest entropy contribution and Qubic shareholders.
