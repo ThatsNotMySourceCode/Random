@@ -47,6 +47,7 @@ struct RevealAndCommit_input {
 - Revenue:
     - 50% of all `BuyEntropy` payment goes to recent miners (based on pool used for buyer’s request)
     - 50% goes to Qubic shareholders
+    - Lost security deposits (from missed or late reveals) go 100% to Qubic shareholders.
 
 **Querying price on-chain (C++/CLI):**
 ```cpp
