@@ -3,11 +3,6 @@
 #include <cstring>
 #include "contract_testing.h"
 
-// Only contract_testing.h is needed for all contract types and state access.
-
-// Remove RandomChecker: do not access contract private state directly
-// All state checks should use contract public functions (GetContractInfo, GetUserCommitments, etc.)
-
 class ContractTestingRandom : public ContractTesting
 {
 public:
@@ -22,20 +17,20 @@ public:
 	// Commit+reveal convenience
 	void commit(const id& miner, const bit_4096& commitBits, uint64_t deposit)
 	{
-		increaseEnergy(miner, deposit * 2); // ensure enough QU
+		increaseEnergy(miner, deposit *2); // ensure enough QU
 		RANDOM::RevealAndCommit_input inp{};
-		inp.committed_digest = fakeDigest(commitBits); // Use a fake digest for test
+		inp.committed_digest = k12Digest(commitBits); // Use real K12 digest for test
 		RANDOM::RevealAndCommit_output out{};
-		invokeUserProcedure(0, 1, inp, out, miner, deposit);
+		invokeUserProcedure(0,1, inp, out, miner, deposit);
 	}
 
 	void revealAndCommit(const id& miner, const bit_4096& revealBits, const bit_4096& newCommitBits, uint64_t deposit)
 	{
 		RANDOM::RevealAndCommit_input inp{};
 		inp.revealed_bits = revealBits;
-		inp.committed_digest = fakeDigest(newCommitBits);
+		inp.committed_digest = k12Digest(newCommitBits);
 		RANDOM::RevealAndCommit_output out{};
-		invokeUserProcedure(0, 1, inp, out, miner, deposit);
+		invokeUserProcedure(0,1, inp, out, miner, deposit);
 	}
 
 	void stopMining(const id& miner, const bit_4096& revealBits)
@@ -44,17 +39,17 @@ public:
 		inp.revealed_bits = revealBits;
 		inp.committed_digest = id::zero();
 		RANDOM::RevealAndCommit_output out{};
-		invokeUserProcedure(0, 1, inp, out, miner, 0);
+		invokeUserProcedure(0,1, inp, out, miner,0);
 	}
 
 	bool buyEntropy(const id& buyer, uint32_t numBytes, uint64_t minMinerDeposit, uint64_t suggestedFee, bool expectSuccess)
 	{
-		increaseEnergy(buyer, suggestedFee + 10000);
+		increaseEnergy(buyer, suggestedFee +10000);
 		RANDOM::BuyEntropy_input inp{};
 		inp.number_of_bytes = numBytes;
 		inp.min_miner_deposit = minMinerDeposit;
 		RANDOM::BuyEntropy_output out{};
-		invokeUserProcedure(0, 2, inp, out, buyer, suggestedFee);
+		invokeUserProcedure(0,2, inp, out, buyer, suggestedFee);
 		if (expectSuccess)
 			EXPECT_TRUE(out.success);
 		else
@@ -69,7 +64,7 @@ public:
 		q.number_of_bytes = numBytes;
 		q.min_miner_deposit = minMinerDeposit;
 		RANDOM::QueryPrice_output o{};
-		callFunction(0, 3, q, o);
+		callFunction(0,3, q, o);
 		return o.price;
 	}
 
@@ -77,19 +72,18 @@ public:
 	static bit_4096 testBits(uint64_t v) {
 		bit_4096 b{};
 		uint64_t* ptr = reinterpret_cast<uint64_t*>(&b);
-		for (int i = 0; i < 64; ++i) ptr[i] = v ^ (0xDEADBEEF12340000ULL | i);
+		for (int i =0; i <64; ++i) ptr[i] = v ^ (0xDEADBEEF12340000ULL | i);
 		return b;
 	}
 	static id testId(uint64_t base) {
 		id d = id::zero();
-		for (int i = 0; i < 32; ++i) d.m256i_u8[i] = uint8_t((base >> (i % 8)) + i);
+		for (int i =0; i <32; ++i) d.m256i_u8[i] = uint8_t((base >> (i %8)) + i);
 		return d;
 	}
-	static id fakeDigest(const bit_4096& b) {
-		id d = id::zero();
-		const uint8_t* src = reinterpret_cast<const uint8_t*>(&b);
-		for (int i = 0; i < 32; ++i) d.m256i_u8[i] = src[i];
-		return d;
+	static id k12Digest(const bit_4096& b) {
+		id digest = id::zero();
+		KangarooTwelve(&b, sizeof(b), &digest, sizeof(digest));
+		return digest;
 	}
 };
 
@@ -463,7 +457,7 @@ TEST(ContractRandom, RejectInvalidDeposits)
 
 	// Try to commit invalid deposit (not a power of ten)
 	RANDOM::RevealAndCommit_input inp{};
-	inp.committed_digest = ContractTestingRandom::fakeDigest(ContractTestingRandom::testBits(66));
+	inp.committed_digest = ContractTestingRandom::k12Digest(ContractTestingRandom::testBits(66));
 	RANDOM::RevealAndCommit_output out{};
 	// Use7777 which is not a power of ten, should not register a commitment
 	random.invokeUserProcedure(0, 1, inp, out, miner, 7777);
