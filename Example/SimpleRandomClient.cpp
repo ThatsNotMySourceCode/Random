@@ -8,13 +8,11 @@
 #include <thread>
 #include <chrono>
 #include <x86intrin.h>
-
-// === K12 Support ===
-// Download KangarooTwelve.h and KangarooTwelve.c from https://github.com/XKCP/XKCP/tree/master/Standalone/K12
 extern "C" {
     #include "KangarooTwelve.h"
 }
 
+// ---- Config ----
 #define NODE_IP "00.00.00.000"
 #define NODE_PORT 21841
 #define SC_ID "DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANMIG"
@@ -23,27 +21,26 @@ extern "C" {
 #define TX_TYPE_QUERYPRICE 3
 
 #define EXTRA_DATA_SIZE_MINER 544
-#define EXTRA_DATA_SIZE_BUY   16  // 4 bytes numBytes + 8 bytes minMinerDeposit + 4 bytes padding or reserved
-#define EXTRA_DATA_SIZE_PRICE 12  // 4 bytes numBytes + 8 bytes minMinerDeposit
+#define EXTRA_DATA_SIZE_BUY   16
+#define EXTRA_DATA_SIZE_PRICE 12
 #define SEED "yourminerseedhere"
 #define REVEAL_TICKS 9
 
 typedef unsigned char uint8;
 typedef unsigned long long uint64;
-typedef uint64 bit_4096_data[64];
+typedef uint64 Bit4096Data[64];
 
-struct bit_4096 {
-    bit_4096_data data;
+struct Bit4096 {
+    Bit4096Data data;
 };
 
-struct id {
+struct Id {
     uint8 bytes[32];
-    id() { std::memset(bytes, 0, 32); }
+    Id() { std::memset(bytes, 0, 32); }
 };
 
-// Generate 4096 bits from rdseed
-bit_4096 generateEntropy() {
-    bit_4096 entropy;
+Bit4096 generateEntropy() {
+    Bit4096 entropy;
     for (int i = 0; i < 64; ++i) {
         uint64 val;
         int success = 0;
@@ -59,14 +56,13 @@ bit_4096 generateEntropy() {
     return entropy;
 }
 
-// Use K12 as required for contract compatibility
-id hashEntropy(const bit_4096& entropy) {
-    id result;
+Id hashEntropy(const Bit4096& entropy) {
+    Id result;
     KangarooTwelve(reinterpret_cast<const unsigned char*>(&entropy), sizeof(entropy), result.bytes, 32, NULL, 0);
     return result;
 }
 
-int get_current_tick() {
+int getCurrentTick() {
     std::ostringstream cmd;
     cmd << "./qubic-cli -nodeip " << NODE_IP << " -getcurrenttick";
     FILE* pipe = popen(cmd.str().c_str(), "r");
@@ -86,14 +82,12 @@ std::string toHex(const uint8* data, size_t sz) {
         oss << std::hex << std::setw(2) << std::setfill('0') << (int)data[i];
     return oss.str();
 }
-std::string bit4096ToHex(const bit_4096& b) {
-    return toHex(reinterpret_cast<const uint8*>(&b), sizeof(bit_4096));
+std::string bit4096ToHex(const Bit4096& b) {
+    return toHex(reinterpret_cast<const uint8*>(&b), sizeof(Bit4096));
 }
 
-// --- Query contract for price ---
-uint64 query_price(uint32_t numBytes, uint64 minDeposit) {
+uint64 queryPrice(uint32_t numBytes, uint64 minDeposit) {
     std::ostringstream extra;
-    // Pack QueryPrice_input: 4 bytes numBytes (big-endian), 8 bytes minDeposit
     extra << std::hex
           << std::setw(8) << std::setfill('0') << numBytes
           << std::setw(16) << minDeposit;
@@ -113,16 +107,14 @@ uint64 query_price(uint32_t numBytes, uint64 minDeposit) {
     while (fgets(buffer, sizeof(buffer), pipe) != nullptr) output += buffer;
     pclose(pipe);
 
-    // Parse for "price: "
     size_t pos = output.find("price:");
-    if (pos != std::string::npos) 
+    if (pos != std::string::npos)
         return std::stoull(output.substr(pos + 6));
     std::cout << "Unable to parse QueryPrice output, got: " << output << std::endl;
     return 0;
 }
 
-// --- CLI: Entropy Mining (Commit/Reveal) ---
-void miner_commit(const bit_4096& revealBits, const id& commitDigest, uint64 deposit) {
+void minerCommit(const Bit4096& revealBits, const Id& commitDigest, uint64 deposit) {
     std::ostringstream extra;
     extra << bit4096ToHex(revealBits);
     extra << toHex(commitDigest.bytes, 32);
@@ -140,10 +132,8 @@ void miner_commit(const bit_4096& revealBits, const id& commitDigest, uint64 dep
     else std::cerr << "Commit TX failed\n";
 }
 
-// --- CLI: Buy Entropy (Random Bytes as User, price auto-from SC) ---
-void buy_entropy_cli(uint32_t numBytes, uint64 minMinerDeposit) {
-    // Query the contract for the correct minimum fee
-    uint64 fee = query_price(numBytes, minMinerDeposit);
+void buyEntropyCli(uint32_t numBytes, uint64 minMinerDeposit) {
+    uint64 fee = queryPrice(numBytes, minMinerDeposit);
     if (!fee) {
         std::cerr << "Could not get price from contract--aborting buy tx!" << std::endl;
         return;
@@ -170,7 +160,7 @@ void buy_entropy_cli(uint32_t numBytes, uint64 minMinerDeposit) {
     else std::cerr << "BuyEntropy TX failed\n";
 }
 
-void print_my_commitments(const std::string& myHexId) {
+void printMyCommitments(const std::string& myHexId) {
     std::ostringstream extra;
     extra << myHexId;
     std::ostringstream cmd;
@@ -189,12 +179,12 @@ void print_my_commitments(const std::string& myHexId) {
     std::cout << "My commitments:\n" << output << std::endl;
 }
 
-void wait_for_tick(int targetTick) {
-    int cur = get_current_tick();
+void waitForTick(int targetTick) {
+    int cur = getCurrentTick();
     while (cur < targetTick) {
-        std::cout << "Current Tick: " << cur << ", Waiting for " << targetTick << std::endl;
+        std::cout << "Current Tick: " << cur << ", Waiting for Tick: " << targetTick << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        cur = get_current_tick();
+        cur = getCurrentTick();
     }
 }
 
@@ -204,17 +194,17 @@ int main() {
 
     while (true) {
         // --- Commit phase ---
-        bit_4096 commitEntropy = generateEntropy();
-        id nextDigest = hashEntropy(commitEntropy);
-        bit_4096 zeroReveal = {};
-        miner_commit(zeroReveal, nextDigest, deposit);
-        int commitTick = get_current_tick();
+        Bit4096 commitEntropy = generateEntropy();
+        Id nextDigest = hashEntropy(commitEntropy);
+        Bit4096 zeroReveal = {};
+        minerCommit(zeroReveal, nextDigest, deposit);
+        int commitTick = getCurrentTick();
         int revealTick = commitTick + REVEAL_TICKS;
         std::cout << "Committed at tick: " << commitTick << ", will reveal at tick: " << revealTick << std::endl;
 
         // --- Wait and Reveal phase ---
-        wait_for_tick(revealTick);
-        miner_commit(commitEntropy, id{}, 0); // reveal previous entropy, no new commit
+        waitForTick(revealTick);
+        minerCommit(commitEntropy, Id{}, 0); // reveal previous entropy, no new commit
 
         std::cout << "Mining cycle " << (++cycle) << " complete.\n";
         std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -223,7 +213,7 @@ int main() {
         if (cycle % 5 == 0) {
             uint32_t wants = 32;
             uint64 minDep = 100000;
-            buy_entropy_cli(wants, minDep);
+            buyEntropyCli(wants, minDep);
         }
     }
     return 0;
