@@ -19,7 +19,7 @@ public:
 	{
 		increaseEnergy(miner, deposit *2); // ensure enough QU
 		RANDOM::RevealAndCommit_input inp{};
-		inp.committed_digest = k12Digest(commitBits); // Use real K12 digest for test
+		inp.committedDigest = k12Digest(commitBits); // Use real K12 digest for test
 		RANDOM::RevealAndCommit_output out{};
 		invokeUserProcedure(0,1, inp, out, miner, deposit);
 	}
@@ -27,8 +27,8 @@ public:
 	void revealAndCommit(const id& miner, const bit_4096& revealBits, const bit_4096& newCommitBits, uint64_t deposit)
 	{
 		RANDOM::RevealAndCommit_input inp{};
-		inp.revealed_bits = revealBits;
-		inp.committed_digest = k12Digest(newCommitBits);
+		inp.revealedBits = revealBits;
+		inp.committedDigest = k12Digest(newCommitBits);
 		RANDOM::RevealAndCommit_output out{};
 		invokeUserProcedure(0,1, inp, out, miner, deposit);
 	}
@@ -36,8 +36,8 @@ public:
 	void stopMining(const id& miner, const bit_4096& revealBits)
 	{
 		RANDOM::RevealAndCommit_input inp{};
-		inp.revealed_bits = revealBits;
-		inp.committed_digest = id::zero();
+		inp.revealedBits = revealBits;
+		inp.committedDigest = id::zero();
 		RANDOM::RevealAndCommit_output out{};
 		invokeUserProcedure(0,1, inp, out, miner,0);
 	}
@@ -46,8 +46,8 @@ public:
 	{
 		increaseEnergy(buyer, suggestedFee +10000);
 		RANDOM::BuyEntropy_input inp{};
-		inp.number_of_bytes = numBytes;
-		inp.min_miner_deposit = minMinerDeposit;
+		inp.numberOfBytes = numBytes;
+		inp.minMinerDeposit = minMinerDeposit;
 		RANDOM::BuyEntropy_output out{};
 		invokeUserProcedure(0,2, inp, out, buyer, suggestedFee);
 		if (expectSuccess)
@@ -61,8 +61,8 @@ public:
 	uint64_t queryPrice(uint32_t numBytes, uint64_t minMinerDeposit)
 	{
 		RANDOM::QueryPrice_input q{};
-		q.number_of_bytes = numBytes;
-		q.min_miner_deposit = minMinerDeposit;
+		q.numberOfBytes = numBytes;
+		q.minMinerDeposit = minMinerDeposit;
 		RANDOM::QueryPrice_output o{};
 		callFunction(0,3, q, o);
 		return o.price;
@@ -111,7 +111,7 @@ TEST(ContractRandom, BasicCommitRevealStop)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.active_commitments, 0);
+	EXPECT_EQ(co.activeCommitments, 0);
 }
 
 TEST(ContractRandom, TimeoutsAndRefunds)
@@ -126,7 +126,7 @@ TEST(ContractRandom, TimeoutsAndRefunds)
 	RANDOM::GetContractInfo_input ci0{};
 	RANDOM::GetContractInfo_output co0{};
 	random.callFunction(0, 1, ci0, co0);
-	int timeoutTick = GET_TICK() + co0.reveal_timeout_ticks + 1;
+	int timeoutTick = GET_TICK() + co0.revealTimeoutTicks + 1;
 	SET_TICK(timeoutTick);
 
 	// Trigger timeout (choose any call, including another commit or dummy reveal)
@@ -137,8 +137,8 @@ TEST(ContractRandom, TimeoutsAndRefunds)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.active_commitments, 0);
-	EXPECT_EQ(co.lost_deposits_revenue, 2000);
+	EXPECT_EQ(co.activeCommitments, 0);
+	EXPECT_EQ(co.lostDepositsRevenue, 2000);
 }
 
 TEST(ContractRandom, EmptyTickRefund)
@@ -149,11 +149,11 @@ TEST(ContractRandom, EmptyTickRefund)
 
 	random.commit(miner, bits, 3000);
 
-	// Use GetContractInfo to get reveal_timeout_ticks
+	// Use GetContractInfo to get revealTimeoutTicks
 	RANDOM::GetContractInfo_input ci0{};
 	RANDOM::GetContractInfo_output co0{};
 	random.callFunction(0, 1, ci0, co0);
-	int refundTick = system.tick + co0.reveal_timeout_ticks;
+	int refundTick = system.tick + co0.revealTimeoutTicks;
 	system.tick = refundTick;
 	numberTickTransactions = -1;
 
@@ -164,7 +164,7 @@ TEST(ContractRandom, EmptyTickRefund)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.active_commitments, 0);
+	EXPECT_EQ(co.activeCommitments, 0);
 }
 
 TEST(ContractRandom, BuyEntropyEligibility)
@@ -188,7 +188,7 @@ TEST(ContractRandom, BuyEntropyEligibility)
 	RANDOM::GetContractInfo_input ci0{};
 	RANDOM::GetContractInfo_output co0{};
 	random.callFunction(0, 1, ci0, co0);
-	system.tick = system.tick + co0.reveal_timeout_ticks + 1;
+	system.tick = system.tick + co0.revealTimeoutTicks + 1;
 	EXPECT_FALSE(random.buyEntropy(buyer, 16, 1000, 16000, false));
 }
 
@@ -196,8 +196,8 @@ TEST(ContractRandom, QueryPriceLogic)
 {
 	ContractTestingRandom random;
 	RANDOM::QueryPrice_input q{};
-	q.number_of_bytes = 16;
-	q.min_miner_deposit = 1000;
+	q.numberOfBytes = 16;
+	q.minMinerDeposit = 1000;
 	RANDOM::QueryPrice_output o{};
 	random.callFunction(0, 3, q, o);
 	uint64_t price = random.queryPrice(16, 1000);
@@ -280,9 +280,9 @@ TEST(ContractRandom, EndEpochDistribution)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.miner_earnings_pool, 0);
-	EXPECT_EQ(co.shareholder_earnings_pool, 0);
-	EXPECT_EQ(co.recent_miner_count, 0);
+	EXPECT_EQ(co.minerEarningsPool, 0);
+	EXPECT_EQ(co.shareholderEarningsPool, 0);
+	EXPECT_EQ(co.recentMinerCount, 0);
 }
 
 TEST(ContractRandom, RecentMinerEvictionPolicy)
@@ -302,7 +302,7 @@ TEST(ContractRandom, RecentMinerEvictionPolicy)
 	RANDOM::GetContractInfo_input ci0{};
 	RANDOM::GetContractInfo_output co0{};
 	random.callFunction(0, 1, ci0, co0);
-	EXPECT_EQ(co0.recent_miner_count, maxMiners);
+	EXPECT_EQ(co0.recentMinerCount, maxMiners);
 
 	// Add new miner with higher deposit, should evict one of the previous (lowest deposit)
 	id highMiner = ContractTestingRandom::testId(99999);
@@ -312,16 +312,16 @@ TEST(ContractRandom, RecentMinerEvictionPolicy)
 	RANDOM::GetContractInfo_input ci1{};
 	RANDOM::GetContractInfo_output co1{};
 	random.callFunction(0, 1, ci1, co1);
-	EXPECT_EQ(co1.recent_miner_count, maxMiners);
+	EXPECT_EQ(co1.recentMinerCount, maxMiners);
 
 	// All lower deposit miners except one likely evicted, highMiner should be present with max deposit
 	int foundHigh = 0;
 	RANDOM::GetUserCommitments_input inp{};
 	RANDOM::GetUserCommitments_output out{};
 	for (uint32_t i = 0; i < maxMiners; ++i) {
-		inp.user_id = highMiner;
+		inp.userId = highMiner;
 		random.callFunction(0, 2, inp, out);
-		if (out.commitment_count > 0) foundHigh++;
+		if (out.commitmentCount > 0) foundHigh++;
 	}
 	EXPECT_EQ(foundHigh, 1);
 }
@@ -368,7 +368,7 @@ TEST(ContractRandom, EmptyTickRefund_MultiMiners)
 	RANDOM::GetContractInfo_input ci0{};
 	RANDOM::GetContractInfo_output co0{};
 	random.callFunction(0, 1, ci0, co0);
-	int tick = system.tick + co0.reveal_timeout_ticks;
+	int tick = system.tick + co0.revealTimeoutTicks;
 	system.tick = tick;
 	numberTickTransactions = -1;
 
@@ -378,7 +378,7 @@ TEST(ContractRandom, EmptyTickRefund_MultiMiners)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.active_commitments, 0);
+	EXPECT_EQ(co.activeCommitments, 0);
 	// test both miners' balances for refund if desired
 }
 
@@ -392,7 +392,7 @@ TEST(ContractRandom, Timeout_MultiMiners)
 	RANDOM::GetContractInfo_input ci0{};
 	RANDOM::GetContractInfo_output co0{};
 	random.callFunction(0, 1, ci0, co0);
-	int afterTimeout = system.tick + co0.reveal_timeout_ticks + 1;
+	int afterTimeout = system.tick + co0.revealTimeoutTicks + 1;
 	system.tick = afterTimeout;
 
 	RANDOM::RevealAndCommit_input dummy = {};
@@ -402,8 +402,8 @@ TEST(ContractRandom, Timeout_MultiMiners)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.active_commitments, 0);
-	EXPECT_EQ(co.lost_deposits_revenue, 6000);
+	EXPECT_EQ(co.activeCommitments, 0);
+	EXPECT_EQ(co.lostDepositsRevenue, 6000);
 }
 
 TEST(ContractRandom, MultipleBuyersEpochReset)
@@ -424,9 +424,9 @@ TEST(ContractRandom, MultipleBuyersEpochReset)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.miner_earnings_pool, 0);
-	EXPECT_EQ(co.shareholder_earnings_pool, 0);
-	EXPECT_EQ(co.recent_miner_count, 0);
+	EXPECT_EQ(co.minerEarningsPool, 0);
+	EXPECT_EQ(co.shareholderEarningsPool, 0);
+	EXPECT_EQ(co.recentMinerCount, 0);
 }
 
 TEST(ContractRandom, QueryUserCommitmentsInfo)
@@ -438,16 +438,16 @@ TEST(ContractRandom, QueryUserCommitmentsInfo)
 
 	// Call GetUserCommitments for miner
 	RANDOM::GetUserCommitments_input inp{};
-	inp.user_id = miner;
+	inp.userId = miner;
 	RANDOM::GetUserCommitments_output out{};
 	random.callFunction(0, 2, inp, out);
-	EXPECT_GE(out.commitment_count, 1);
+	EXPECT_GE(out.commitmentCount, 1);
 
 	// Call GetContractInfo for global stats
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_GE(co.total_commits, 1);
+	EXPECT_GE(co.totalCommits, 1);
 }
 
 TEST(ContractRandom, RejectInvalidDeposits)
@@ -457,7 +457,7 @@ TEST(ContractRandom, RejectInvalidDeposits)
 
 	// Try to commit invalid deposit (not a power of ten)
 	RANDOM::RevealAndCommit_input inp{};
-	inp.committed_digest = ContractTestingRandom::k12Digest(ContractTestingRandom::testBits(66));
+	inp.committedDigest = ContractTestingRandom::k12Digest(ContractTestingRandom::testBits(66));
 	RANDOM::RevealAndCommit_output out{};
 	// Use7777 which is not a power of ten, should not register a commitment
 	random.invokeUserProcedure(0, 1, inp, out, miner, 7777);
@@ -465,7 +465,7 @@ TEST(ContractRandom, RejectInvalidDeposits)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.active_commitments, 0);
+	EXPECT_EQ(co.activeCommitments, 0);
 }
 
 TEST(ContractRandom, BuyEntropyEdgeNumBytes)
@@ -507,5 +507,5 @@ TEST(ContractRandom, OutOfOrderRevealAndCompaction)
 	RANDOM::GetContractInfo_input ci{};
 	RANDOM::GetContractInfo_output co{};
 	random.callFunction(0, 1, ci, co);
-	EXPECT_EQ(co.active_commitments, 0);
+	EXPECT_EQ(co.activeCommitments, 0);
 }
