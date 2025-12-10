@@ -7,7 +7,13 @@
 #include <iomanip>
 #include <thread>
 #include <chrono>
-#include <openssl/sha.h>
+#include <x86intrin.h>
+
+// === K12 Support ===
+// Download KangarooTwelve.h and KangarooTwelve.c from https://github.com/XKCP/XKCP/tree/master/Standalone/K12
+extern "C" {
+    #include "KangarooTwelve.h"
+}
 
 #define NODE_IP "00.00.00.000"
 #define NODE_PORT 21841
@@ -53,12 +59,10 @@ bit_4096 generateEntropy() {
     return entropy;
 }
 
+// Use K12 as required for contract compatibility
 id hashEntropy(const bit_4096& entropy) {
     id result;
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, &entropy, sizeof(entropy));
-    SHA256_Final(result.bytes, &ctx);
+    KangarooTwelve(reinterpret_cast<const unsigned char*>(&entropy), sizeof(entropy), result.bytes, 32, NULL, 0);
     return result;
 }
 
