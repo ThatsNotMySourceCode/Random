@@ -3,6 +3,9 @@ using namespace QPI;
 constexpr uint32_t RANDOM_MAX_RECENT_MINERS = 512;   // 2^9
 constexpr uint32_t RANDOM_MAX_COMMITMENTS = 1024;    // 2^10
 constexpr uint32_t RANDOM_ENTROPY_HISTORY_LEN = 4;   // 2^2, even if 3 would suffice
+constexpr uint32_t RANDOM_VALID_DEPOSIT_AMOUNTS = 16;
+constexpr uint32_t RANDOM_MAX_USER_COMMITMENTS = 32;
+constexpr uint32_t RANDOM_RANDOMBYTES_LEN = 32;
 
 struct RANDOM2 {};
 
@@ -54,7 +57,7 @@ private:
 	Array<RANDOM_RecentMiner, RANDOM_MAX_RECENT_MINERS> recentMiners;
 	uint32 recentMinerCount;
 
-	uint64 validDepositAmounts[16]; // allowed for primitive
+	Array<uint64, RANDOM_VALID_DEPOSIT_AMOUNTS> validDepositAmounts;
 
 	Array<RANDOM_EntropyCommitment, RANDOM_MAX_COMMITMENTS> commitments;
 	uint32 commitmentCount;
@@ -62,10 +65,14 @@ private:
 	// --- QPI-compliant helpers ---
 	static inline void xorEntropy(m256i& dst, const bit_4096& src)
 	{
-		const uint64* entropyData = reinterpret_cast<const uint64*>(&src);
+		const Array<uint64, 4>& entropyData = *reinterpret_cast<const Array<uint64, 4>*>(&src);
 		for (uint32 i = 0; i < 4; i++)
 		{
-			dst.m256i_u64[i] ^= entropyData[i];
+			dst.u64._0 = dst.u64._0 ^ entropyData.get(0);
+			dst.u64._1 = dst.u64._1 ^ entropyData.get(1);
+			dst.u64._2 = dst.u64._2 ^ entropyData.get(2);
+			dst.u64._3 = dst.u64._3 ^ entropyData.get(3);
+			break; // Only need to do this once, as all 4 at once
 		}
 	}
 
@@ -81,34 +88,35 @@ private:
 		stateRef.entropyPoolVersionHistory.set(stateRef.entropyHistoryHead, stateRef.entropyPoolVersion);
 	}
 
-	static inline void generateRandomBytesData(const RANDOM& stateRef, uint8* output, uint32 numBytes, uint32 historyIdx, uint32 currentTick)
+	static inline void generateRandomBytesData(const RANDOM& stateRef, Array<uint8, RANDOM_RANDOMBYTES_LEN>& output, uint32 numBytes, uint32 historyIdx, uint32 currentTick)
 	{
 		const m256i selectedPool = stateRef.entropyHistory.get(
 			(stateRef.entropyHistoryHead + RANDOM_ENTROPY_HISTORY_LEN - historyIdx) & (RANDOM_ENTROPY_HISTORY_LEN - 1)
 		);
 
 		m256i tickEntropy;
-		tickEntropy.m256i_u64[0] = static_cast<uint64_t>(currentTick);
-		tickEntropy.m256i_u64[1] = 0;
-		tickEntropy.m256i_u64[2] = 0;
-		tickEntropy.m256i_u64[3] = 0;
+		tickEntropy.u64._0 = static_cast<uint64_t>(currentTick);
+		tickEntropy.u64._1 = 0;
+		tickEntropy.u64._2 = 0;
+		tickEntropy.u64._3 = 0;
 
 		m256i combinedEntropy = selectedPool;
-		for (uint32 i = 0; i < 4; i++)
+		combinedEntropy.u64._0 ^= tickEntropy.u64._0;
+		combinedEntropy.u64._1 ^= tickEntropy.u64._1;
+		combinedEntropy.u64._2 ^= tickEntropy.u64._2;
+		combinedEntropy.u64._3 ^= tickEntropy.u64._3;
+
+		for (uint32 i = 0; i < ((numBytes > RANDOM_RANDOMBYTES_LEN) ? RANDOM_RANDOMBYTES_LEN : numBytes); i++)
 		{
-			combinedEntropy.m256i_u64[i] ^= tickEntropy.m256i_u64[i];
-		}
-		for (uint32 i = 0; i < ((numBytes > 32U) ? 32U : numBytes); i++)
-		{
-			output[i] = combinedEntropy.m256i_u8[i];
+			output.set(i, combinedEntropy.m256i_u8[i]);
 		}
 	}
 
 	static inline bool isValidDepositAmountCheck(const RANDOM& stateRef, uint64 amount)
 	{
-		for (uint32 i = 0; i < 16; i++)
+		for (uint32 i = 0; i < RANDOM_VALID_DEPOSIT_AMOUNTS; i++)
 		{
-			if (amount == stateRef.validDepositAmounts[i])
+			if (amount == stateRef.validDepositAmounts.get(i))
 			{
 				return true;
 			}
@@ -118,28 +126,20 @@ private:
 
 	static inline bool isEqualIdCheck(const id& a, const id& b)
 	{
-		for (uint32 i = 0; i < 32; ++i)
-		{
-			if (a.m256i_u8[i] != b.m256i_u8[i]) { return false; }
-		}
-		return true;
+		return a == b;
 	}
 
 	static inline bool isZeroIdCheck(const id& value)
 	{
-		for (uint32 i = 0; i < 32; ++i)
-		{
-			if (value.m256i_u8[i] != 0) { return false; }
-		}
-		return true;
+		return isZero(value);
 	}
 
 	static inline bool isZeroBitsCheck(const bit_4096& value)
 	{
-		const uint64* data = reinterpret_cast<const uint64*>(&value);
+		const Array<uint64, 64>& data = *reinterpret_cast<const Array<uint64, 64>*>(&value);
 		for (uint32 i = 0; i < 64; i++)
 		{
-			if (data[i] != 0)
+			if (data.get(i) != 0)
 			{
 				return false;
 			}
@@ -153,14 +153,7 @@ private:
 		const QPI::id& committedDigest)
 	{
 		QPI::id computedDigest = qpi.K12(revealedBits);
-		for (QPI::uint32 i = 0; i < 32U; i++)
-		{
-			if (computedDigest.m256i_u8[i] != committedDigest.m256i_u8[i])
-			{
-				return false;
-			}
-		}
-		return true;
+		return computedDigest == committedDigest;
 	}
 
 public:
@@ -171,7 +164,7 @@ public:
 	};
 	struct RevealAndCommit_output
 	{
-		uint8  randomBytes[32];
+		Array<uint8, RANDOM_RANDOMBYTES_LEN> randomBytes;
 		uint64 entropyVersion;
 		bool   revealSuccessful;
 		bool   commitSuccessful;
@@ -187,7 +180,7 @@ public:
 		uint64 minimumSecurityDeposit;
 		uint32 revealTimeoutTicks;
 		uint32 activeCommitments;
-		uint64 validDepositAmounts[16];
+		Array<uint64, RANDOM_VALID_DEPOSIT_AMOUNTS> validDepositAmounts;
 		uint32 currentTick;
 		uint64 entropyPoolVersion;
 		uint64 totalRevenue;
@@ -211,7 +204,8 @@ public:
 			uint32 commitTick;
 			uint32 revealDeadlineTick;
 			bool hasRevealed;
-		} commitments[32];
+		};
+		Array<UserCommitment, RANDOM_MAX_USER_COMMITMENTS> commitments;
 		uint32 commitmentCount;
 	};
 
@@ -223,7 +217,7 @@ public:
 	struct BuyEntropy_output
 	{
 		bool   success;
-		uint8  randomBytes[32];
+		Array<uint8, RANDOM_RANDOMBYTES_LEN> randomBytes;
 		uint64 entropyVersion;
 		uint64 usedMinerDeposit;
 		uint64 usedPoolVersion;
@@ -445,7 +439,7 @@ public:
 			}
 		}
 
-		generateRandomBytesData(state, output.randomBytes, 32, 0, locals.currentTick);
+		generateRandomBytesData(state, output.randomBytes, RANDOM_RANDOMBYTES_LEN, 0, locals.currentTick);
 		output.entropyVersion = state.entropyPoolVersion;
 	}
 
@@ -516,7 +510,7 @@ public:
 		generateRandomBytesData(
 			state,
 			output.randomBytes,
-			(input.numberOfBytes > 32 ? 32 : input.numberOfBytes),
+			(input.numberOfBytes > RANDOM_RANDOMBYTES_LEN ? RANDOM_RANDOMBYTES_LEN : input.numberOfBytes),
 			locals.histIdx,
 			locals.currentTick
 		);
@@ -550,9 +544,9 @@ public:
 		output.shareholderEarningsPool = state.shareholderEarningsPool;
 		output.recentMinerCount = state.recentMinerCount;
 
-		for (uint32 i = 0; i < 16; ++i)
+		for (uint32 i = 0; i < RANDOM_VALID_DEPOSIT_AMOUNTS; ++i)
 		{
-			output.validDepositAmounts[i] = state.validDepositAmounts[i];
+			output.validDepositAmounts.set(i, state.validDepositAmounts.get(i));
 		}
 		for (uint32 i = 0; i < state.commitmentCount; ++i)
 		{
@@ -567,16 +561,18 @@ public:
 	PUBLIC_FUNCTION(GetUserCommitments)
 	{
 		uint32 userCommitmentCount = 0;
-		for (uint32 i = 0; i < state.commitmentCount && userCommitmentCount < 32; i++)
+		for (uint32 i = 0; i < state.commitmentCount && userCommitmentCount < RANDOM_MAX_USER_COMMITMENTS; i++)
 		{
 			RANDOM_EntropyCommitment cmt = state.commitments.get(i);
 			if (isEqualIdCheck(cmt.invocatorId, input.userId))
 			{
-				output.commitments[userCommitmentCount].digest = cmt.digest;
-				output.commitments[userCommitmentCount].amount = cmt.amount;
-				output.commitments[userCommitmentCount].commitTick = cmt.commitTick;
-				output.commitments[userCommitmentCount].revealDeadlineTick = cmt.revealDeadlineTick;
-				output.commitments[userCommitmentCount].hasRevealed = cmt.hasRevealed;
+				GetUserCommitments_output::UserCommitment ucmt;
+				ucmt.digest = cmt.digest;
+				ucmt.amount = cmt.amount;
+				ucmt.commitTick = cmt.commitTick;
+				ucmt.revealDeadlineTick = cmt.revealDeadlineTick;
+				ucmt.hasRevealed = cmt.hasRevealed;
+				output.commitments.set(userCommitmentCount, ucmt);
 				userCommitmentCount++;
 			}
 		}
@@ -664,13 +660,14 @@ public:
 		state.pricePerByte = 10;
 		state.priceDepositDivisor = 1000;
 
-		for (uint32 i = 0; i < 16; ++i)
+		for (uint32 i = 0; i < RANDOM_VALID_DEPOSIT_AMOUNTS; ++i)
 		{
-			state.validDepositAmounts[i] = 1ULL;
+			uint64 val = 1ULL;
 			for (uint32 j = 0; j < i; ++j)
 			{
-				state.validDepositAmounts[i] *= 10;
+				val *= 10;
 			}
+			state.validDepositAmounts.set(i, val);
 		}
 	}
 };
