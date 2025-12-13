@@ -1,5 +1,9 @@
 using namespace QPI;
 
+// Random contract: collects entropy reveals (commit-reveal), maintains an entropy pool,
+// lets buyers purchase bytes of entropy, and pays miners/shareholders.
+
+// Key sizes and limits:
 constexpr uint32_t RANDOM_MAX_RECENT_MINERS = 512;   // 2^9
 constexpr uint32_t RANDOM_MAX_COMMITMENTS = 1024;    // 2^10
 constexpr uint32_t RANDOM_ENTROPY_HISTORY_LEN = 4;   // 2^2, even if 3 would suffice
@@ -9,6 +13,7 @@ constexpr uint32_t RANDOM_RANDOMBYTES_LEN = 32;
 
 struct RANDOM2 {};
 
+// Recent miner info (LRU-ish tracking used to reward miners)
 struct RANDOM_RecentMiner
 {
 	id     minerId;
@@ -17,54 +22,66 @@ struct RANDOM_RecentMiner
 	uint32 lastRevealTick;
 };
 
+// Stored commitment created by miners (commit-reveal scheme)
 struct RANDOM_EntropyCommitment
 {
-	id     digest;
-	id     invocatorId;
-	uint64 amount;
+	id     digest;                // K12(revealedBits) stored at commit time
+	id     invocatorId;           // who committed
+	uint64 amount;                // security deposit
 	uint32 commitTick;
 	uint32 revealDeadlineTick;
 	bool   hasRevealed;
 };
 
+// Contract state and logic
 struct RANDOM : public ContractBase
 {
 private:
 	// --- QPI contract state ---
+	
+	// Circular history of recent entropy pools (m256i)
 	Array<m256i, RANDOM_ENTROPY_HISTORY_LEN> entropyHistory;
 	Array<uint64, RANDOM_ENTROPY_HISTORY_LEN> entropyPoolVersionHistory;
 	uint32 entropyHistoryHead;
 
+	// current 256-bit entropy pool and its version
 	m256i currentEntropyPool;
 	uint64 entropyPoolVersion;
 
+	// Metrics and bookkeeping
 	uint64 totalCommits;
 	uint64 totalReveals;
 	uint64 totalSecurityDepositsLocked;
 
+	// Configurable parameters
 	uint64 minimumSecurityDeposit;
 	uint32 revealTimeoutTicks;
 
+	// Revenue accounting
 	uint64 totalRevenue;
 	uint64 pendingShareholderDistribution;
 	uint64 lostDepositsRevenue;
 	uint64 minerEarningsPool;
 	uint64 shareholderEarningsPool;
 
+	// Pricing
 	uint64 pricePerByte;
 	uint64 priceDepositDivisor;
 
+	// Recent miners (LRU-like), used to split miner earnings
 	Array<RANDOM_RecentMiner, RANDOM_MAX_RECENT_MINERS> recentMiners;
 	uint32 recentMinerCount;
 
+	// Allowed deposit amounts (valid security deposits)
 	Array<uint64, RANDOM_VALID_DEPOSIT_AMOUNTS> validDepositAmounts;
 
+	// Active commitments (commitments array + count)
 	Array<RANDOM_EntropyCommitment, RANDOM_MAX_COMMITMENTS> commitments;
 	uint32 commitmentCount;
 
 	// --- QPI-compliant helpers ---
-	// We'll compute K12 digests (id) from bit_4096 where needed (qpi.K12) and
-	// operate on id (256-bit) which fits m256i/id layout.
+	
+	// Simple helpers that avoid forbidden constructs in contracts.
 
 	static inline bool validDepositAmountAt(const RANDOM& stateRef, uint64 amount, uint32 idx)
 	{
@@ -82,6 +99,8 @@ private:
 	}
 
 public:
+	// --- Inputs / outputs for user-facing procedures and functions ---
+
 	struct RevealAndCommit_input
 	{
 		bit_4096 revealedBits;
@@ -151,6 +170,8 @@ public:
 	struct QueryPrice_input { uint32 numberOfBytes; uint64 minMinerDeposit; };
 	struct QueryPrice_output { uint64 price; };
 
+	//---- Locals storage for procedures ---
+
 	struct RevealAndCommit_locals
 	{
 		uint32 currentTick;
@@ -163,17 +184,17 @@ public:
 		uint32 lowestIx;
 		bool hashMatches;
 
-		// added locals for inlined random-bytes generation (no stack locals)
+		// locals for random-bytes generation (no stack locals)
 		uint32 histIdx;
 		uint32 rb_i;
 
-		// precompute K12 digest of revealedBits once per call to avoid casts
+		// precompute K12 digest of revealedBits once per call
 		id revealedDigest;
 
-		// move per-iteration commitment here (no stack-local)
+		// per-iteration commitment
 		RANDOM_EntropyCommitment cmt;
 
-		// per-iteration temporaries moved into locals
+		// per-iteration temporaries (moved into locals for compliance)
 		uint64 lostDeposit;
 		RANDOM_RecentMiner recentMinerA;
 		RANDOM_RecentMiner recentMinerB;
@@ -181,7 +202,7 @@ public:
 		// deposit validity flag moved into locals
 		bool depositValid;
 
-		// per-commit creation temporary (moved out of stack)
+		// temporary used to create new commitments (moved out of stack)
 		RANDOM_EntropyCommitment ncmt;
 	};
 	struct BuyEntropy_locals
@@ -195,7 +216,6 @@ public:
 		uint32 histIdx;
 		uint64 half;
 
-		// per-iteration commitment
 		RANDOM_EntropyCommitment cmt;
 
 		// per-iteration temporaries
@@ -208,7 +228,6 @@ public:
 		uint32 i;
 		uint64 payout;
 
-		// per-iteration commitment
 		RANDOM_EntropyCommitment cmt;
 
 		// per-iteration temporaries
@@ -220,10 +239,7 @@ public:
 		uint32 userCommitmentCount;
 		uint32 i;
 
-		// per-iteration commitment
 		RANDOM_EntropyCommitment cmt;
-
-		// per-iteration output item
 		GetUserCommitments_output::UserCommitment ucmt;
 	};
 	struct GetContractInfo_locals
@@ -240,16 +256,22 @@ public:
 	};
 
 	// --------------------------------------------------
+	// RevealAndCommit procedure:
+	// - Removes expired commitments
+	// - Optionally processes a reveal (preimage) and returns deposit if valid
+	// - Optionally accepts a new commitment (invocation reward as deposit)
+
 	PUBLIC_PROCEDURE_WITH_LOCALS(RevealAndCommit)
 	{
 		locals.currentTick = qpi.tick();
 
-		// Remove expired commitments
+		// Remove expired commitments (sweep) -- reclaim lost deposits into revenue pools
 		for (locals.i = 0; locals.i < state.commitmentCount;)
 		{
 			locals.cmt = state.commitments.get(locals.i);
 			if (!locals.cmt.hasRevealed && locals.currentTick > locals.cmt.revealDeadlineTick)
 			{
+				// Move deposit into lost revenue and remove commitment (swap-with-last)
 				locals.lostDeposit = locals.cmt.amount;
 				state.lostDepositsRevenue += locals.lostDeposit;
 				state.totalRevenue += locals.lostDeposit;
@@ -268,7 +290,7 @@ public:
 			}
 		}
 
-		// Early epoch: forcibly return expired
+		// Special-case early epoch: forcibly return deposits that expire exactly this tick
 		if (qpi.numberOfTickTransactions() == -1)
 		{
 			for (locals.i = 0; locals.i < state.commitmentCount;)
@@ -276,6 +298,7 @@ public:
 				locals.cmt = state.commitments.get(locals.i);
 				if (!locals.cmt.hasRevealed && locals.cmt.revealDeadlineTick == qpi.tick())
 				{
+					// refund directly in early epoch mode
 					qpi.transfer(locals.cmt.invocatorId, locals.cmt.amount);
 					state.totalSecurityDepositsLocked -= locals.cmt.amount;
 					if (locals.i != state.commitmentCount - 1)
@@ -293,13 +316,15 @@ public:
 			return;
 		}
 
-		// Precompute digest of revealedBits once (avoid inspecting bit_4096 internals)
+		// Precompute digest of revealedBits once to avoid forbidden casts into bit_4096
 		locals.revealedDigest = qpi.K12(input.revealedBits);
-		// Treat presence of a reveal as attempt to match digest
+
+		// Presence of reveal is treated as an attempt to match stored digests
 		locals.hasRevealData = true;
 		locals.hasNewCommit = !isZeroIdCheck(input.committedDigest);
 		locals.isStoppingMining = (qpi.invocationReward() == 0);
 
+		// If reveal provided: search for matching commitment(s) by this invocator
 		if (locals.hasRevealData)
 		{
 			for (locals.i = 0; locals.i < state.commitmentCount;)
@@ -307,11 +332,12 @@ public:
 				locals.cmt = state.commitments.get(locals.i);
 				if (!locals.cmt.hasRevealed && isEqualIdCheck(locals.cmt.invocatorId, qpi.invocator()))
 				{
-					// Match using precomputed K12 digest
+					// Compare stored digest to precomputed K12(revealedBits)
 					locals.hashMatches = (locals.cmt.digest == locals.revealedDigest);
 
 					if (locals.hashMatches)
 					{
+						// If reveal too late, deposit is forfeited; otherwise update entropy pool and refund.
 						if (locals.currentTick > locals.cmt.revealDeadlineTick)
 						{
 							locals.lostDeposit = locals.cmt.amount;
@@ -322,26 +348,28 @@ public:
 						}
 						else
 						{
-							// XOR the 256-bit digest (id) into the currentEntropyPool (m256i).
+							// Apply the 256-bit digest to the pool by XORing the 4 x 64-bit lanes.
+							// This avoids inspecting bit_4096 internals and keeps everything QPI-compliant.
 							state.currentEntropyPool.u64._0 ^= locals.revealedDigest.u64._0;
 							state.currentEntropyPool.u64._1 ^= locals.revealedDigest.u64._1;
 							state.currentEntropyPool.u64._2 ^= locals.revealedDigest.u64._2;
 							state.currentEntropyPool.u64._3 ^= locals.revealedDigest.u64._3;
 
-							// advance history
+							// Advance circular history with copy of new pool and bump version.
 							state.entropyHistoryHead = (state.entropyHistoryHead + 1) & (RANDOM_ENTROPY_HISTORY_LEN - 1);
 							state.entropyHistory.set(state.entropyHistoryHead, state.currentEntropyPool);
 
 							state.entropyPoolVersion++;
 							state.entropyPoolVersionHistory.set(state.entropyHistoryHead, state.entropyPoolVersion);
 
+							// Refund deposit to invocator and update stats.
 							qpi.transfer(qpi.invocator(), locals.cmt.amount);
 							output.revealSuccessful = true;
 							output.depositReturned = locals.cmt.amount;
 							state.totalReveals++;
 							state.totalSecurityDepositsLocked -= locals.cmt.amount;
 
-							// Maintain LRU recentMiner
+							// Maintain recentMiners LRU: update existing entry, append if space, or replace lowest.
 							locals.existingIndex = -1;
 							for (locals.rm = 0; locals.rm < state.recentMinerCount; ++locals.rm)
 							{
@@ -354,6 +382,7 @@ public:
 							}
 							if (locals.existingIndex >= 0)
 							{
+								// update stored recent miner entry
 								locals.recentMinerA = state.recentMiners.get(locals.existingIndex);
 								if (locals.recentMinerA.deposit < locals.cmt.amount)
 								{
@@ -365,6 +394,7 @@ public:
 							}
 							else if (state.recentMinerCount < RANDOM_MAX_RECENT_MINERS)
 							{
+								// append new recent miner
 								locals.recentMinerA.minerId = qpi.invocator();
 								locals.recentMinerA.deposit = locals.cmt.amount;
 								locals.recentMinerA.lastEntropyVersion = state.entropyPoolVersion;
@@ -374,6 +404,7 @@ public:
 							}
 							else
 							{
+								// Find lowest-ranked miner and replace if current qualifies
 								locals.lowestIx = 0;
 								for (locals.rm = 1; locals.rm < RANDOM_MAX_RECENT_MINERS; ++locals.rm)
 								{
@@ -400,6 +431,7 @@ public:
 							}
 						}
 
+						// Remove commitment (swap with last) and continue scanning without incrementing i.
 						state.totalSecurityDepositsLocked -= locals.cmt.amount;
 						if (locals.i != state.commitmentCount - 1)
 						{
@@ -414,9 +446,11 @@ public:
 			}
 		}
 
+		// If caller provided a new commitment (invocationReward used as deposit) and not stopping mining,
+		// accept it if deposit is valid and meets minimum.
 		if (locals.hasNewCommit && !locals.isStoppingMining)
 		{
-			// Inline deposit validity check using locals (no loop inside helper).
+			// Inline deposit validity check using allowed-values array
 			locals.depositValid = false;
 			for (locals.i = 0; locals.i < RANDOM_VALID_DEPOSIT_AMOUNTS; ++locals.i)
 			{
@@ -431,6 +465,7 @@ public:
 			{
 				if (state.commitmentCount < RANDOM_MAX_COMMITMENTS)
 				{
+					// Use locals.ncmt (approved locals) as temporary to avoid stack-local.
 					locals.ncmt.digest = input.committedDigest;
 					locals.ncmt.invocatorId = qpi.invocator();
 					locals.ncmt.amount = qpi.invocationReward();
@@ -446,7 +481,9 @@ public:
 			}
 		}
 
-		// Inlined generation of RANDOM_RANDOMBYTES_LEN random bytes without stack locals.
+		// Produce 32 random-like bytes from latest entropy history and current tick:
+		// - take most recent history entry (histIdx) and extract bytes from its 64-bit lanes,
+		// - XOR first 8 bytes with tick-derived bytes to add per-tick variation.
 		locals.histIdx = (state.entropyHistoryHead + RANDOM_ENTROPY_HISTORY_LEN - 0) & (RANDOM_ENTROPY_HISTORY_LEN - 1);
 		for (locals.rb_i = 0; locals.rb_i < RANDOM_RANDOMBYTES_LEN; ++locals.rb_i)
 		{
@@ -459,10 +496,10 @@ public:
 							(locals.rb_i < 8) ? state.entropyHistory.get(locals.histIdx).u64._0 :
 							(locals.rb_i < 16) ? state.entropyHistory.get(locals.histIdx).u64._1 :
 							(locals.rb_i < 24) ? state.entropyHistory.get(locals.histIdx).u64._2 :
-												state.entropyHistory.get(locals.histIdx).u64._3
-						) >> (8 * (locals.rb_i & 7))
-					) & 0xFF
-				) ^
+							state.entropyHistory.get(locals.histIdx).u64._3
+							) >> (8 * (locals.rb_i & 7))
+						) & 0xFF
+					) ^
 				(locals.rb_i < 8 ? static_cast<uint8_t>((static_cast<uint64_t>(locals.currentTick) >> (8 * locals.rb_i)) & 0xFF) : 0)
 			);
 		}
@@ -470,10 +507,15 @@ public:
 		output.entropyVersion = state.entropyPoolVersion;
 	}
 
+	// BuyEntropy procedure:
+	// - Removes expired commitments (same sweep)
+	// - Checks buyer fee and miner eligibility
+	// - Charges buyer and returns requested bytes from slightly older pool version
 	PUBLIC_PROCEDURE_WITH_LOCALS(BuyEntropy)
 	{
 		locals.currentTick = qpi.tick();
 
+		// Sweep expired commitments (same logic as above)
 		for (locals.i = 0; locals.i < state.commitmentCount;)
 		{
 			locals.cmt = state.commitments.get(locals.i);
@@ -497,6 +539,7 @@ public:
 			}
 		}
 
+		// Disallow in early-epoch mode
 		if (qpi.numberOfTickTransactions() == -1)
 		{
 			output.success = false;
@@ -508,6 +551,7 @@ public:
 		locals.eligible = false;
 		locals.usedMinerDeposit = 0;
 
+		// Find an eligible recent miner whose deposit >= minMinerDeposit and who revealed recently
 		for (locals.i = 0; locals.i < state.recentMinerCount; ++locals.i)
 		{
 			locals.recentMinerTemp = state.recentMiners.get(locals.i);
@@ -525,6 +569,7 @@ public:
 			return;
 		}
 
+		// Compute minimum price and check buyer fee
 		locals.minPrice = state.pricePerByte * input.numberOfBytes *
 			(div(input.minMinerDeposit, state.priceDepositDivisor) + 1);
 
@@ -533,9 +578,10 @@ public:
 			return;
 		}
 
+		// Use the previous-but-one history entry for purchased entropy (to avoid last-second reveals)
 		locals.histIdx = (state.entropyHistoryHead + RANDOM_ENTROPY_HISTORY_LEN - 2) & (RANDOM_ENTROPY_HISTORY_LEN - 1);
 
-		// Inlined generation of requested random bytes without stack locals.
+		// Produce requested bytes (bounded by RANDOM_RANDOMBYTES_LEN)
 		for (locals.i = 0; locals.i < ((input.numberOfBytes > RANDOM_RANDOMBYTES_LEN) ? RANDOM_RANDOMBYTES_LEN : input.numberOfBytes); ++locals.i)
 		{
 			output.randomBytes.set(
@@ -546,24 +592,27 @@ public:
 							(locals.i < 8) ? state.entropyHistory.get(locals.histIdx).u64._0 :
 							(locals.i < 16) ? state.entropyHistory.get(locals.histIdx).u64._1 :
 							(locals.i < 24) ? state.entropyHistory.get(locals.histIdx).u64._2 :
-											 state.entropyHistory.get(locals.histIdx).u64._3
-						) >> (8 * (locals.i & 7))
-					) & 0xFF
-				) ^
+							state.entropyHistory.get(locals.histIdx).u64._3
+							) >> (8 * (locals.i & 7))
+						) & 0xFF
+					) ^
 				(locals.i < 8 ? static_cast<uint8_t>((static_cast<uint64_t>(locals.currentTick) >> (8 * locals.i)) & 0xFF) : 0)
 			);
 		}
 
+		// Return metadata and split buyer fee
 		output.entropyVersion = state.entropyPoolVersionHistory.get(locals.histIdx);
 		output.usedMinerDeposit = locals.usedMinerDeposit;
 		output.usedPoolVersion = state.entropyPoolVersionHistory.get(locals.histIdx);
 		output.success = true;
 
+		// Split fee: half to miners pool, half to shareholders
 		locals.half = div(locals.buyerFee, (uint64)2);
 		state.minerEarningsPool += locals.half;
 		state.shareholderEarningsPool += (locals.buyerFee - locals.half);
 	}
 
+	// GetContractInfo: return public state summary
 	PUBLIC_FUNCTION_WITH_LOCALS(GetContractInfo)
 	{
 		locals.currentTick = qpi.tick();
@@ -584,10 +633,12 @@ public:
 		output.shareholderEarningsPool = state.shareholderEarningsPool;
 		output.recentMinerCount = state.recentMinerCount;
 
+		// Copy valid deposit amounts
 		for (locals.i = 0; locals.i < RANDOM_VALID_DEPOSIT_AMOUNTS; ++locals.i)
 		{
 			output.validDepositAmounts.set(locals.i, state.validDepositAmounts.get(locals.i));
 		}
+		// Count active commitments
 		for (locals.i = 0; locals.i < state.commitmentCount; ++locals.i)
 		{
 			if (!state.commitments.get(locals.i).hasRevealed)
@@ -598,6 +649,7 @@ public:
 		output.activeCommitments = locals.activeCount;
 	}
 
+	// GetUserCommitments: list commitments for a user (bounded)
 	PUBLIC_FUNCTION_WITH_LOCALS(GetUserCommitments)
 	{
 		locals.userCommitmentCount = 0;
@@ -606,6 +658,7 @@ public:
 			locals.cmt = state.commitments.get(locals.i);
 			if (isEqualIdCheck(locals.cmt.invocatorId, input.userId))
 			{
+				// copy to output buffer
 				locals.ucmt.digest = locals.cmt.digest;
 				locals.ucmt.amount = locals.cmt.amount;
 				locals.ucmt.commitTick = locals.cmt.commitTick;
@@ -618,15 +671,19 @@ public:
 		output.commitmentCount = locals.userCommitmentCount;
 	}
 
+	// QueryPrice: compute price for a buyer based on requested bytes and min miner deposit
 	PUBLIC_FUNCTION(QueryPrice)
 	{
 		output.price = state.pricePerByte * input.numberOfBytes *
 			(div(input.minMinerDeposit, (uint64)state.priceDepositDivisor) + 1);
 	}
 
+	// END_EPOCH: sweep expired commitments and distribute earnings to recent miners and shareholders
 	END_EPOCH_WITH_LOCALS()
 	{
 		locals.currentTick = qpi.tick();
+
+		// Sweep expired commitments (same logic)
 		for (locals.i = 0; locals.i < state.commitmentCount;)
 		{
 			locals.cmt = state.commitments.get(locals.i);
@@ -651,6 +708,7 @@ public:
 			}
 		}
 
+		// Pay miners equally from minerEarningsPool
 		if (state.minerEarningsPool > 0 && state.recentMinerCount > 0)
 		{
 			locals.payout = div(state.minerEarningsPool, (uint64)state.recentMinerCount);
@@ -662,6 +720,7 @@ public:
 					qpi.transfer(locals.recentMinerTemp.minerId, locals.payout);
 				}
 			}
+			// reset miner pool and recentMiners
 			state.minerEarningsPool = 0;
 			for (locals.i = 0; locals.i < RANDOM_MAX_RECENT_MINERS; ++locals.i)
 			{
@@ -673,11 +732,13 @@ public:
 			}
 			state.recentMinerCount = 0;
 		}
+		// Distribute shareholder earnings (if any)
 		if (state.shareholderEarningsPool > 0)
 		{
 			qpi.distributeDividends(div(state.shareholderEarningsPool, (uint64)NUMBER_OF_COMPUTORS));
 			state.shareholderEarningsPool = 0;
 		}
+		// Distribute any pending shareholder distribution (from lost deposits)
 		if (state.pendingShareholderDistribution > 0)
 		{
 			qpi.distributeDividends(div(state.pendingShareholderDistribution, (uint64)NUMBER_OF_COMPUTORS));
@@ -685,6 +746,7 @@ public:
 		}
 	}
 
+	// Register functions and procedures (standard QPI boilerplate)
 	REGISTER_USER_FUNCTIONS_AND_PROCEDURES()
 	{
 		REGISTER_USER_FUNCTION(GetContractInfo, 1);
@@ -695,6 +757,7 @@ public:
 		REGISTER_USER_PROCEDURE(BuyEntropy, 2);
 	}
 
+	// INITIALIZE: set defaults and fill valid deposit amounts array (powers of 10)
 	INITIALIZE_WITH_LOCALS()
 	{
 		locals.i = 0;
@@ -707,6 +770,7 @@ public:
 		state.pricePerByte = 10;
 		state.priceDepositDivisor = 1000;
 
+		// validDepositAmounts: 1, 10, 100, 1000, ...
 		for (locals.i = 0; locals.i < RANDOM_VALID_DEPOSIT_AMOUNTS; ++locals.i)
 		{
 			locals.val = 1ULL;
