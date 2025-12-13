@@ -288,11 +288,11 @@ TEST(ContractRandom, EndEpochDistribution)
 TEST(ContractRandom, RecentMinerEvictionPolicy)
 {
 	ContractTestingRandom random;
-	const int maxMiners = MAX_RECENT_MINERS;
+	const int maxMiners = RANDOM_MAX_RECENT_MINERS;
 	std::vector<id> miners;
 	auto baseDeposit = 1000;
 
-	// Fill up to MAX_RECENT_MINERS, all with same deposit
+	// Fill up to RANDOM_MAX_RECENT_MINERS, all with same deposit
 	for (int i = 0; i < maxMiners; ++i) {
 		auto miner = ContractTestingRandom::testId(5000 + i);
 		miners.push_back(miner);
