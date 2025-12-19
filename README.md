@@ -151,3 +151,11 @@ Used to scale BuyEntropy price based on the minimum miner deposit required by th
 `pricePerByte * numberOfBytes * (minMinerDeposit / priceDepositDivisor + 1)`
 - **validDepositAmounts[16]** (uint64[]):
 List of all allowed deposit amounts (powers of ten), used to validate miner deposits and enforce the security level spectrum.
+
+
+### SECURITY NOTICE:
+The randomness provided by this contract depends on the entropy supplied by miners.
+Miners are currently free to choose their random source, and may not use truly unpredictable data.
+For high assurance, buyers can self-mine their own entropy, ensuring at least one unpredictable source is included.
+If no trustworthy miner or self-mining occurs, output may be predictable or biasable.
+Qubic can also enforce that there is always one honest random miner active (like arb), then the output is always secure.
