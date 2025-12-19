@@ -153,7 +153,8 @@ Used to scale BuyEntropy price based on the minimum miner deposit required by th
 List of all allowed deposit amounts (powers of ten), used to validate miner deposits and enforce the security level spectrum.
 
 
-### SECURITY NOTICE:
+## SECURITY NOTICE
+
 The randomness provided by this contract depends on the entropy supplied by miners.
 Miners are currently free to choose their random source, and may not use truly unpredictable data.
 For high assurance, buyers can self-mine their own entropy, ensuring at least one unpredictable source is included.
